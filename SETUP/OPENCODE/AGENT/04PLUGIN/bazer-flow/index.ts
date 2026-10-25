@@ -14,7 +14,7 @@ import { isTempPath, defaultTempRoots, isGateCliCommand } from './paths.mjs';
 const DIR = path.join(os.homedir(), '.local', 'state', 'opencode', 'bazer-flow', 'v2');
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const DEBUG = process.env.BAZER_FLOW_DEBUG === '1';
-const BUILD = '2n'; const INST = crypto.randomBytes(2).toString('hex');
+const BUILD = '2v'; const INST = crypto.randomBytes(2).toString('hex');
 const CLOSED_HINT = 'STOP. Flow unavailable - project writes are closed. Tell the user to restart OpenCode.';
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SPEC_URL = new URL('./flow.spec.json', import.meta.url);
@@ -63,7 +63,7 @@ export default Plugin.define({
   'chat.message': async (input, output) => onChatMessage(input, output),
   async setup(ctx) {
     const store = fsStore(DIR);
-    const ring = ringLog(path.join(DIR, 'log.tsv'), 400);
+    const ring = ringLog(path.join(DIR, 'log.tsv'), 1500);
     let seq = 0;
     const emit = (entry) => { try { ring({ ...entry, seq: ++seq, at: entry && entry.at ? entry.at : Date.now(), inst: INST, pid: process.pid }); } catch { /* never throw */ } };
     const diag = createDiag(emit, 30, DEBUG ? 3 : 0);
@@ -176,8 +176,9 @@ export default Plugin.define({
             const tool = toToolEvent(event);
             if (tool && rt) {
               if (tool.kind === 'called' && isGateCliCommand(tool.command)) rt.rememberGate(tool.callId);
-              else if (tool.kind === 'success') rt.gateEvent(tool.sid, tool.callId, tool.leaves);
+              else if (tool.kind === 'success') rt.gateEvent(tool.sid, tool.callId, tool.leaves, tool.metadata);
             }
+            if (type === 'session.shell.ended' && rt) rt.shellEnded(event.data);
             const inbox = toInboxUser(event); if (inbox && rt) rt.inboxUser(inbox);
             const sel = toAgentEvent(event); if (sel && rt) flowLog.agent(sel.sid, rt.setAgent(sel.sid, sel.agent), sel.agent, 'session.agent.selected');
             const link = toLink(event);

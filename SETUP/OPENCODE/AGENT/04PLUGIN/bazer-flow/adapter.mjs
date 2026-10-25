@@ -76,8 +76,11 @@ export function toRes(event) {
   const out = event && event.result;
   const text = typeof out === 'string' ? out : out == null ? '' : JSON.stringify(out);
   const status = String((event && event.status) || '');
-  const failed = !!(event && event.error) || (!!status && status !== 'completed');
-  const res = { tool: t, output: text, error: failed, id: callIdOf(event) };
+  const failed = !!(event && event.error) || (!!status && status !== 'completed' && status !== 'running');
+  const errRaw = event && event.error;
+  const errText = failed ? (typeof errRaw === 'string' ? errRaw : errRaw && typeof errRaw === 'object' ? String(errRaw.message || errRaw.name || '') : '') : '';
+  const res = { tool: t, output: text || errText, error: failed, status, id: callIdOf(event), metadata: (event && event.metadata) || {} };
+  if (errText) res.errorText = errText;
   if (t === 'task') res.subagent = subagentTarget((event && event.input) || {});
   return res;
 }
@@ -143,7 +146,7 @@ export function toToolEvent(event) {
   const type = String((event && event.type) || '');
   const d = (event && event.data) || {};
   if (type === 'session.tool.called') return { kind: 'called', sid: String(d.sessionID || ''), callId: String(d.id || ''), command: String((d.input && d.input.command) || ''), workdir: String((d.input && d.input.workdir) || '') };
-  if (type === 'session.tool.success') return { kind: 'success', sid: String(d.sessionID || ''), callId: String(d.id || ''), leaves: stringLeaves(d.content, 5) };
+  if (type === 'session.tool.success') return { kind: 'success', sid: String(d.sessionID || ''), callId: String(d.id || ''), leaves: stringLeaves(d.content, 5), metadata: d.metadata || {} };
   return null;
 }
 
@@ -151,7 +154,7 @@ export function toInboxUser(event) {
   if (!event || event.type !== 'session.inbox.enqueued') return null;
   const d = event.data || {};
   const item = d.item || {};
-  return { sid: String(d.sessionID || ''), messageId: String(d.inboxID || ''), itemType: String(item.type || ''), delivery: String(item.delivery || ''), leaves: stringLeaves(item.payload, 4) };
+  return { sid: String(d.sessionID || ''), messageId: String(d.inboxID || ''), itemType: String(item.type || ''), delivery: String(item.delivery || ''), payload: item.payload || {}, leaves: stringLeaves(item.payload, 4) };
 }
 
 export function toPermissionReq(event) {

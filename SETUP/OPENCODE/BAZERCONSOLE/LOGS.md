@@ -1,6 +1,63 @@
 > หน่วยตัวเลขประจำการอัพเดตที่ใหม่ที่สุด (ล่าสุด) จะอยู่ระหว่างข้อความนี้ (อันที่คุณกำลังเห็นนี้เลย) กับ H1 อันแรก (อันที่ติดกับข้อความนี้ ฝั่งด้านล่าง)
 
 
+# 00.00.21 - Sunday 25th October 2026 - K3: dev-file refs + selftest baseline
+> K2 verified: real state.json sha256 EE3E8824…FBD9 and history.tsv BD072E27…CDA9 unchanged; backups 1,402 / quarantine 67 / tokens 8.
+> K3: apitest plugin check now requires index.ts and neither logic.mjs nor guard.test.mjs; GUIDELINE/USECASES point gate logic at engine/runtime; min OpenCode stays 2.0.30 everywhere.
+> Selftest baseline: 73 passed, 0 failed (one run under k3 backup; no child process, no network, writes only temp homes).
+> logic.mjs/guard.test.mjs remain deleted; the next plugin install prunes them from the installed copy.
+
+# 00.00.20 - Sunday 25th October 2026 - K2: named messages, token sweep, backup retention
+> K1: state store derives from --home (real var only for the real home), apitest is sandboxed, and a temp snapshotHome is ignored; the SNACK mode-lock run line was removed.
+> K2: blocker/pending summaries name 3 items +K (reason <=30, total <=160); strategy patch is a blocker; token file uses the bound port with stale token sweep; backups keep 100 rounds + lastApply.
+> README tree/mode count fixed; plugin logic.mjs/guard.test.mjs deleted (24 assertions); selftest stale SUBSUBAGENT/logic refs removed.
+> Console relaunch needed to load K1+K2; user must recreate model snapshot; first apply after install prunes ~1,300 old backup rounds.
+
+# 00.00.19 - Sunday 25th October 2026 - K1: isolate Console state store (H1)
+> H1: every writer reached the real var/ under --home; apitest wrote state/history/token/bintest there, so the real state.json held fixtures (modelsSnapshot p/one..p/four, snapshotHome=%TEMP%\bazer\api test home, locks.models).
+> K1: storeFor(home) = real var for the real home, <home>/.bazerconsole/var otherwise; index builds one STORE (token included), actions/probe pass it, cleanup quarantine follows it; apitest is fully sandboxed.
+> B4: a snapshotHome that is not the current home (real store: not the real home / under temp) hides modelsSnapshot; lock-restore refuses with "snapshot มาจากโฟลเดอร์ทดสอบ - สร้าง snapshot ใหม่"; drift is hidden.
+> Old test fixture pollution of real state.json; guard added; user must recreate model snapshot.
+> Tests: node --test tools/isolation.test.mjs 2/2; node --check apply/actions/index/probe/apitest.
+
+# 00.00.18 - Saturday 24th October 2026 - hello13 result + build 2v
+> hello13 (2t): buddha flow P0->P7 with no `>>` commands; GATE1/GATE2 advanced via the gate hook. The first arena-runner task call failed instantly (after-hook status error, head empty, error text not captured, cause unknown); the retry ran, but it was the only runner, so the judge saw candidate C1 only.
+> A live BAZER flow in another window sat at B4 when 2t booted; version-only migration reset it to B12 and its builder call was then denied phase-order. Design flaw, fixed in 2v: keep phase/round/counters when the phase id exists and stored `expect` matches; reset only on unknown phase or changed expect; migration logs `kind` (keep|reset).
+> 2v: failed task head = error text (adapter keeps `${error.message}`); first error per process logs `task-err-shape` (shape only, string leaves = lengths). Log ring 400 -> 1500 (1500-line rewrite 1 ms); same-state `gate-cli` rows once per callId per process. Tests 140/140.
+
+# 00.00.17 - Friday 23rd October 2026 - pre-flight for 2t install + build 2u (manifest/selftest/docs only)
+> Pre-flight after the Arena rewrite: Console `apply` refused with 3 blockers — manifest.json:170 pointed at AGENT/02SUBAGENT/ARENA.md, :192/:205 at AGENT/02SUBAGENT/SUBSUBAGENT/...; all three missing. Fixed: runner/judge sources → AGENT/02SUBAGENT/..., `sub.arena` entry removed; static missing count 3 → 0.
+> Install rewrites each agent file's whole `permission:` block from the saved ladder level (state.json level 3; apply.mjs:135-140) — the repo body survives. Runtime precedence config-vs-file is unresolved: policies.json:2 says config wins, probe.mjs:245 assumes file keys win.
+> apply never deletes retired installed agents (arena.md stays) → backlog: manifest `retire` list.
+> Owner UI backlog: blocker and self-check ("needs action N") messages must name each item, cause and fix — the data is already in plan.blockers / plan.entries.
+> 2u: BUDDHA.md skip/feedback/no-git/timeout prose fixed (net -45 chars); BAZER.md + 3 GUIDELINE files de-referenced agent `arena` (prose; BAZER net -10); selftest 554/557 paths fixed (364 still stale, report-only); 133/133 tests. Plugin build stays `2t`.
+
+# 00.00.16 - Friday 23rd October 2026 - arena agent removed, P3 option Y, build 2t
+> Agent `arena` removed: OpenCode has no sub-sub-agent, so buddha→arena→runner failed "agent not found". BUDDHA now runs Arena itself in P3; spec P3 expect = `buddha`, also = `arena-runner`, `arena-judge`, `poteto`.
+> P3 exit = option Y: `poteto.start` → P4 only when ≥1 runner `started` and ≥1 judge `done` (non-error, non-running) since phase entry; otherwise the call is denied with a ≤160-char hint naming the missing requirement + "or user types >>skip". Re-runs stay in P3. `>>skip`/`>>abort` unchanged.
+> 2t: spec v2 `requires[]` replaces `requireChild`; running/error results never count as done (error undoes a provisional start + `child failed` log); `tempOnly` = arena-runner/judge may write only under temp at any phase; `task-after` log {sid6,caller,subagent,status,head} once per callId; state migration (version/unknown phase → flow start + notice); badge = `<phase> <NAME> [rN]`; agent name `arena` removed from spec/runtime tests and dead logic/guard tests; 133 tests.
+
+# 00.00.15 - Thursday 22nd October 2026 - hello11 (gate tool) + build 2s
+> hello11 finding (inference, unverified): the root flow agent called Plannotator's own plan tool; its `{content:[{type:'text',text:'Plan approved! …'}]}` result classified as pending (anchored rules never saw the text) → phase stayed P2/P5 and the next task was denied phase-order.
+> Fallback that worked: the user typed `>>approve` at P2 → P3.
+> 2s: spec `gateTools:["submit_plan"]` + gate-tool route (caller = expect OR root flow key, dedupe `g:<callId>`), envelope unwrap + anchored approved / not-approved prefixes, `plan` log {tool,sid6,agent,head}, `gate-cli-after` only for remembered or gate-tool calls (once per callId per process), in-command `$v="…"` resolution (depth ≤3, conflicting = unresolved), synthetic `head` ≤80 chars; 124 tests.
+
+# 00.00.14 - Thursday 22nd October 2026 - build 2q real run + 2r (temp roots, quoting, multi-line)
+> (a) 2q real run "hello10": BUDDHA P0→P7 completed without `>>skip`; arena-runner ×3 + arena-judge ×1 counted (child guard works); GATE1/GATE2 approved via hook+event routes; the `shell.ended` route is still unexercised (no timeout occurred).
+> (b) 2r: temp roots = `%TEMP%\bazer` + `%TEMP%\opencode` (models keep using the latter); backtick/backslash-escaped quotes stripped around redirect targets; multi-line / `;` PowerShell checked per statement — every target must be inside a temp root.
+> (c) BACKLOG (owner observation): "บันไดเหมาเข่ง" does not work in practice — most shell commands still prompt, e.g. a long read-only inline PowerShell (`ReadAllText`/`Split`/regex comparing a project doc against a copy under `%TEMP%\opencode`). Idea, undecided: drive the ladder by plugin classification (read-only / temp-only) via `permission.evaluate` instead of command patterns. Handle in queue item 4 / at the end.
+
+# 00.00.13 - Thursday 22nd October 2026 - DEMAND vs build 2q (intent vs current behavior)
+> DEMAND.md = owner's original intent; NOT edited. Current build deviates:
+> 1. Gate feedback: DEMAND sends it back to the plan phase (B3→B2 line 221, P2→P1 229, P5→P4 234); current spec = stay (revise in place, badge `GATE rN`) — deliberate, tested on a real run.
+> 2. `>>approve`/`>>skip`/`>>abort` and "only a human may skip Arena" are later additions; DEMAND is silent.
+> 3. Not implemented vs DEMAND: Arena background-loop watchdog (line 78), Plannotator auto-return to caller mode (170-172), SNACK/ADVISOR edit/no-edit split beyond `.md` (174-179), ladder risk-confirmation surface (48).
+> 2q: `requireChild` on P3 blocks `arena.done` with zero started children; task/write deny hints name allowed agents and the temp dir; null sinks (`2>/dev/null`) stop counting as writes; 116 tests.
+
+# 00.00.12 - Thursday 22nd October 2026 - build 2o/2p: background gate CLI (shellID → session.shell.ended)
+> 2o: log-only synthetic inbox (shape/hasDecisionKey/hasShellId, dedupe per inboxID) + `gate-cli-after` outcome running/timeout; PLANNOTATOR timeout 900000 ms, no rerun.
+> 2p: running shellID → callId mapped in store (`shid:`); `session.shell.ended` re-runs the same gate checks and applies once; running/timeout never touch counters; deny hint "gate review still running"; 109 plugin tests.
+
 # 00.00.11 - Wednesday 21st October 2026 - bazer-flow v2: flow engine + runtime + gate CLI (build 2n)
 
 > คำขอของแชทนี้: อ่าน/วิเคราะห์ระบบเดิม (read-only) → ออกแบบ "flow engine" ที่สถานะเฟสเป็นข้อมูลจริง ไม่เดาจากข้อความแผน → ทำ runtime/hook จริง → ไล่ปิดช่องรั่วจาก log จริงของผู้ใช้ (gate-cli, shell classification, 4 instances, inbox, WSL ฯลฯ)

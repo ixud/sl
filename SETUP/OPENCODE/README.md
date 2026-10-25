@@ -9,7 +9,7 @@ A control pack for OpenCode + Plannotator + pStack. Data and program are separat
 - **Data vs program:** `AGENT/**` and `BAZERCONSOLE/01MAIN/PASSIVE/**` are data only. Code lives in `ACTIVE/**`.
 - **One manifest owns the truth:** `PASSIVE/01MANIFEST/manifest.json` says what goes where; the server never hardcodes target paths.
 - **Plan before write:** `plan` is a dry run (5 states); `apply` backs up, writes atomically, re-hashes, and rolls back the whole run on failure.
-- **Five modes:** BUDDHA · BAZER · SNACK · ADVISOR (the built-in Plan/Build are hidden via config, not deleted).
+- **Four modes:** BUDDHA · BAZER · SNACK · ADVISOR (the built-in Plan/Build are hidden via config, not deleted).
 - **Safety rails:** R1–R4 are enforced by code, old files are quarantined (never deleted), and every write is recorded in `history.tsv`.
 - **No dependencies / no build step:** Node built-ins + plain HTML/CSS/JS. Clone and run.
 
@@ -31,8 +31,7 @@ MAJOR/
 ├─ GUIDELINE.md              กฎแม่ 4 ข้อ
 ├─ AGENT/
 │  ├─ 01PRIMARY/             BUDDHA · BAZER · SNACK · ADVISOR
-│  ├─ 02SUBAGENT/            poteto · plannotator · arena · builder
-│  │  └─ SUBSUBAGENT/        arena-runner · arena-judge
+│  ├─ 02SUBAGENT/            poteto · plannotator · builder · arena-runner · arena-judge
 │  ├─ 03SKILLS/              PSTACK (53) · BAZER (ว่าง)
 │  └─ 04PLUGIN/              ที่เดียวที่เป็นโค้ดได้ (ยังไม่เขียนใหม่)
 ├─ BAZERCONSOLE/

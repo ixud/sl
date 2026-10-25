@@ -69,7 +69,16 @@ function fire(rt, sid, key) {
 }
 
 function drive(rt, sid, flow, target) {
-  for (const key of pathTo(flow, target)) fire(rt, sid, key);
+  for (const key of pathTo(flow, target)) {
+    const phase = spec.flows[flow].phases[rt.info(sid).phase];
+    const dot = key.lastIndexOf('.');
+    const name = key.slice(0, dot);
+    const kind = key.slice(dot + 1);
+    if (phase.requires?.length && phase.transitions[key] && phase.transitions[key] !== 'stay') {
+      for (const r of phase.requires) for (let i = 0; i < r.min; i++) { rt.before(sid, TASK(r.agent)); rt.after(sid, { tool: 'task', subagent: r.agent }); }
+    }
+    fire(rt, sid, key);
+  }
   return rt;
 }
 
@@ -206,6 +215,9 @@ test('U11 stall hint uses injected clock; >>skip proceeds', () => {
   const { rt, t } = boot();
   rt.setAgent('r', 'buddha');
   drive(rt, 'r', 'buddha', 'P3');
+  rt.before('r', TASK('arena-runner'));
+  rt.before('r', TASK('arena-judge'));
+  rt.after('r', { tool: 'task', subagent: 'arena-judge' });
   assert.doesNotMatch(rt.remind('r'), /stalled/);
   t.v = NOW + spec.defaults.stallMs + 1;
   assert.match(rt.remind('r'), /stalled/);
@@ -219,7 +231,7 @@ test('U12 out-of-order call is denied with a hint naming the next step', () => {
   drive(rt, 'r', 'buddha', 'P4');
   const verdict = rt.before('r', TASK('builder'));
   assert.equal(verdict.allow, false);
-  assert.match(verdict.hint, /next step/);
+  assert.match(verdict.hint, /allows only/);
   assert.match(verdict.hint, /P4/);
 });
 
@@ -343,7 +355,7 @@ test('U20 many peeks leave store and log byte-identical', () => {
 
 test('U21 peek() and before() agree on every phase', () => {
   const reqs = [
-    TASK('poteto'), TASK('builder'), TASK('arena'), WRITE(PROJ), WRITE(TEMP),
+    TASK('poteto'), TASK('builder'), TASK('arena-runner'), WRITE(PROJ), WRITE(TEMP),
     SHELL('echo hi > x'), { tool: 'read' }, { tool: 'submit_plan' },
   ];
   for (const flow of Object.keys(spec.flows)) {
@@ -437,7 +449,7 @@ test('U24 every deny hint says STOP and carries a reason code', () => {
   rt.setAgent('r', 'buddha');
   const phase1 = rt.peek('r', TASK('builder')).hint;
   drive(rt, 'r', 'buddha', 'P6');
-  const phase2 = rt.peek('r', TASK('arena')).hint;
+  const phase2 = rt.peek('r', TASK('arena-runner')).hint;
   const protHint = rt.peek('r', WRITE(prot)).hint;
   rt.setAgent('child', 'builder');
   const orphan = rt.before('child', WRITE(PROJ)).hint;
@@ -586,7 +598,7 @@ test('U34 feedback decision stays at the gate and counts a round', () => {
   rt.before('child', { tool: 'shell', command: GATE_CMD, id: 'g2' });
   rt.after('child', { tool: 'shell', id: 'g2', output: gateOut('annotated') });
   assert.equal(rt.info('root').phase, 'B3');
-  assert.equal(rt.badge('root'), 'GATE r2');
+  assert.equal(rt.badge('root'), 'B3 GATE r2');
   assert.equal(rt.before('root', { tool: 'submit_plan' }).allow, true);
 });
 
@@ -636,7 +648,7 @@ test('U37 output without a JSON decision line stays pending', () => {
   rt.before('child', { tool: 'shell', command: GATE_CMD, id: 'g6' });
   rt.after('child', { tool: 'shell', id: 'g6', output: 'EXIT=0\nno decision here' });
   assert.equal(rt.info('root').phase, 'B3');
-  assert.equal(rt.badge('root'), 'GATE r1');
+  assert.equal(rt.badge('root'), 'B3 GATE r1');
 });
 
 test('U38 prose output mentioning approval never opens a gate', () => {
@@ -693,8 +705,8 @@ test('U41 duplicate delivery across two instances applies once', () => {
   const res = { tool: 'submit_plan', id: 'plan-1', output: '{"decision":"annotated"}' };
   a.after('r', res);
   b.after('r', res);
-  assert.equal(a.badge('r'), 'GATE r2');
-  assert.equal(b.badge('r'), 'GATE r2');
+  assert.equal(a.badge('r'), 'P2 GATE1 r2');
+  assert.equal(b.badge('r'), 'P2 GATE1 r2');
   const msg = { sid: 'r', agent: 'buddha', messageId: 'm-1', text: '>>approve' };
   assert.equal(a.userChat(msg).applied, true);
   const dup = b.userChat(msg);
@@ -748,7 +760,7 @@ test('U44 annotated decision stays at the gate and counts a round', () => {
   rt.before('child', { tool: 'shell', command: GATE_CMD, id: 'gf' });
   rt.after('child', { tool: 'shell', id: 'gf', output: { output: gateOut('annotated') } });
   assert.equal(rt.info('root').phase, 'B3');
-  assert.equal(rt.badge('root'), 'GATE r2');
+  assert.equal(rt.badge('root'), 'B3 GATE r2');
 });
 
 test('U45 hook and event routes apply once; pending first does not starve a later approval', () => {
@@ -766,8 +778,9 @@ test('U45 hook and event routes apply once; pending first does not starve a late
   rt.gateEvent('child', 'gx', [gateOut('approved')]);
   rt.after('child', { tool: 'shell', id: 'gx', output: gateOut('approved') });
   assert.equal(rt.info('root').phase, 'B4');
-  assert.ok(entries.some((e) => e.event === 'gate-cli-after' && e.via === 'event' && e.outcome === 'approved'));
-  assert.ok(entries.some((e) => e.event === 'gate-cli-after' && e.why === 'dup'));
+  assert.equal(entries.filter((e) => e.event === 'gate-cli-after' && e.callId6 === 'gx').length, 1);
+  assert.equal(entries.filter((e) => e.event === 'gate-cli-after' && e.callId6 === 'gx').pop().via, 'hook');
+  assert.equal(entries.filter((e) => e.event === 'gate-cli-after' && e.callId6 === 'gx').length, 1);
   assert.ok(entries.some((e) => e.event === 'after-seen' && e.tool === 'shell' && e.hasId === true));
 });
 
@@ -968,7 +981,8 @@ test('U56 duplicate and no-call gate logs are deduped process-wide; plain inbox 
   a.before('child', { tool: 'shell', command: V4, id: 'dup1' });
   a.after('child', { tool: 'shell', id: 'dup1', output: gateOut('approved') });
   b.gateEvent('child', 'dup1', [gateOut('approved')]);
-  assert.equal([...ea, ...eb].filter((e) => e.event === 'gate-cli-after' && e.why === 'dup').length, 1);
+  assert.equal([...ea, ...eb].filter((e) => e.event === 'gate-cli-after' && e.why === 'dup').length, 0);
+  assert.equal([...ea, ...eb].filter((e) => e.event === 'gate-cli-after' && e.callId6 === 'dup1').length, 1);
   const plainEvt = toInboxUser({ type: 'session.inbox.enqueued', data: { sessionID: 'root', inboxID: 'p1', item: { type: 'user', payload: { text: 'hello there' } } } });
   a.inboxUser(plainEvt);
   b.inboxUser(plainEvt);
@@ -1033,6 +1047,566 @@ test('U60 interpreter writes denied and detail-specific hints', () => {
   assert.match(prot.hint, /^Protected path/);
   const phase = rt.before('root', TASK('builder'));
   assert.match(phase.hint, /^STOP\./);
+});
+
+test('U61 synthetic inbox items are logged shape-only, once per inboxID, never applied', () => {
+  const entries = [];
+  const store = memStore();
+  const a = boot({ store, log: (e) => entries.push(e) }).rt;
+  const b = boot({ store, log: (e) => entries.push(e) }).rt;
+  a.setAgent('root', 'buddha');
+  const evt = (payload, id) => toInboxUser({ type: 'session.inbox.enqueued', data: { sessionID: 'root', inboxID: id, item: { type: 'synthetic', payload } } });
+  const e1 = evt({ description: 'please continue', shellID: 'sh_123' }, 'syn-a1');
+  assert.deepEqual(a.inboxUser(e1), { applied: false, why: 'item-type' });
+  b.inboxUser(e1);
+  const syn = entries.filter((e) => e.event === 'synthetic');
+  assert.equal(syn.length, 1);
+  assert.equal(syn[0].hasShellId, true);
+  assert.equal(syn[0].hasDecisionKey, false);
+  assert.match(syn[0].shape, /description:s\d+/);
+  assert.equal(JSON.stringify(entries).includes('please continue'), false);
+  a.inboxUser(evt({ decision: 'approved' }, 'syn-a2'));
+  assert.equal(entries.filter((e) => e.event === 'synthetic').pop().hasDecisionKey, true);
+  assert.equal(a.info('root').phase, 'P0');
+});
+
+test('U62 gate-cli-after logs running/timeout outcomes without advancing', () => {
+  const entries = [];
+  const { rt } = boot({ log: (e) => entries.push(e) });
+  rt.setAgent('root', 'bazer');
+  rt.setAgent('child', 'plannotator');
+  rt.linkSession('child', 'root');
+  drive(rt, 'root', 'bazer', 'B3');
+  rt.before('child', { tool: 'shell', command: V4, id: 'r1' });
+  rt.after('child', { tool: 'shell', id: 'r1', output: '{"status":"running","shellID":"sh_1"}' });
+  assert.equal(entries.filter((e) => e.event === 'gate-cli-after').pop().outcome, 'running');
+  assert.equal(rt.info('root').phase, 'B3');
+  rt.before('child', { tool: 'shell', command: V4, id: 'r2' });
+  rt.after('child', { tool: 'shell', id: 'r2', output: 'Timed out before completion' });
+  assert.equal(entries.filter((e) => e.event === 'gate-cli-after').pop().outcome, 'timeout');
+  assert.equal(rt.info('root').phase, 'B3');
+});
+
+test('U63 PLANNOTATOR.md requires a 900000 ms shell timeout and no rerun', () => {
+  const md = fs.readFileSync(new URL('../../02SUBAGENT/PLANNOTATOR.md', import.meta.url), 'utf8');
+  assert.match(md, /900000/);
+  assert.match(md, /timeout/i);
+  assert.match(md, /ห้ามรันซ้ำ/);
+});
+
+const RUN_OUT = '{"status":"running","shellID":"sh_1"}';
+const RUN_META = { status: 'running', shellID: 'sh_1' };
+
+function mapRunning(rt, id, shellId) {
+  rt.before('child', { tool: 'shell', command: V4, id });
+  rt.after('child', { tool: 'shell', id, output: '{"status":"running","shellID":"' + shellId + '"}', metadata: { status: 'running', shellID: shellId } });
+}
+
+test('U64 running gate result records shell mapping and leaves the engine untouched', () => {
+  const { rt, store } = boot();
+  rt.setAgent('root', 'bazer');
+  rt.setAgent('child', 'plannotator');
+  rt.linkSession('child', 'root');
+  drive(rt, 'root', 'bazer', 'B3');
+  mapRunning(rt, 'run1', 'sh_run1');
+  assert.equal(rt.info('root').phase, 'B3');
+  assert.equal(store.dump().includes('shid:sh_run1'), true);
+  assert.doesNotMatch(rt.remind('root'), /reviewed the plan yourself/);
+});
+
+test('U65 shell.ended approved advances once across instances', () => {
+  const store = memStore();
+  const a = boot({ store }).rt;
+  const b = boot({ store }).rt;
+  for (const rt of [a, b]) { rt.setAgent('root', 'bazer'); rt.setAgent('child', 'plannotator'); rt.linkSession('child', 'root'); }
+  drive(a, 'root', 'bazer', 'B3');
+  mapRunning(a, 'run2', 'sh_run2');
+  const data = { sessionID: 'child', shell: { id: 'sh_run2' }, output: '{"decision":"approved"}' };
+  b.shellEnded(data);
+  assert.equal(a.info('root').phase, 'B4');
+  a.shellEnded(data);
+  assert.equal(a.info('root').phase, 'B4');
+  assert.equal(store.get('shid:sh_run2'), undefined);
+});
+
+test('U66 annotated stays with a round; dismissed/no decision never advance', () => {
+  for (const [shellId, out, next, badge] of [['sh_a', '{"decision":"annotated"}', 'B3', 'B3 GATE r2'], ['sh_d', '{"decision":"dismissed"}', 'B3', 'B3 GATE r1'], ['sh_n', 'EXIT=0\nno json', 'B3', 'B3 GATE r1']]) {
+    const { rt } = boot();
+    rt.setAgent('root', 'bazer'); rt.setAgent('child', 'plannotator'); rt.linkSession('child', 'root');
+    drive(rt, 'root', 'bazer', 'B3');
+    mapRunning(rt, 'run-' + shellId, shellId);
+    rt.shellEnded({ sessionID: 'child', shell: { id: shellId }, output: out });
+    assert.equal(rt.info('root').phase, next, shellId);
+    assert.equal(rt.badge('root'), badge, shellId);
+  }
+});
+
+test('U67 shell.ended after the phase moved is ignored', () => {
+  const { rt } = boot();
+  rt.setAgent('root', 'bazer'); rt.setAgent('child', 'plannotator'); rt.linkSession('child', 'root');
+  drive(rt, 'root', 'bazer', 'B3');
+  mapRunning(rt, 'run4', 'sh_run4');
+  rt.userChat({ sid: 'root', agent: 'bazer', messageId: 'mv1', text: '>>approve' });
+  assert.equal(rt.info('root').phase, 'B4');
+  rt.shellEnded({ sessionID: 'child', shell: { id: 'sh_run4' }, output: '{"decision":"approved"}' });
+  assert.equal(rt.info('root').phase, 'B4');
+});
+
+test('U68 shell.ended for a non gate-cli call is ignored', () => {
+  const { rt, store } = boot();
+  rt.setAgent('root', 'bazer'); rt.setAgent('child', 'plannotator'); rt.linkSession('child', 'root');
+  drive(rt, 'root', 'bazer', 'B3');
+  store.set('shid:sh_spoof', { id: 'sh_spoof', callId: 'not-a-gate', sid: 'child', root: 'root', phase: 'B3', ts: 0 });
+  store.set('shids', ['sh_spoof']);
+  rt.shellEnded({ sessionID: 'child', shell: { id: 'sh_spoof' }, output: '{"decision":"approved"}' });
+  assert.equal(rt.info('root').phase, 'B3');
+});
+
+test('U69 running gate adds the finish-in-browser hint on deny', () => {
+  const { rt } = boot();
+  rt.setAgent('root', 'bazer'); rt.setAgent('child', 'plannotator'); rt.linkSession('child', 'root');
+  drive(rt, 'root', 'bazer', 'B3');
+  mapRunning(rt, 'run5', 'sh_run5');
+  const denied = rt.before('root', TASK('builder'));
+  assert.equal(denied.allow, false);
+  assert.match(denied.hint, /^STOP\. Gate review still running\./);
+  assert.ok(denied.hint.length <= 160);
+});
+
+test('U70 task deny names the agents the phase allows', () => {
+  const { rt } = boot();
+  rt.setAgent('root', 'buddha');
+  drive(rt, 'root', 'buddha', 'P3');
+  const d = rt.before('root', TASK('builder'));
+  assert.equal(d.allow, false);
+  assert.match(d.hint, /allows only: buddha, arena-runner, arena-judge, poteto, explore/);
+  assert.match(d.hint, /Do not ask the user/);
+  assert.ok(d.hint.length <= 160);
+});
+
+test('U71 write deny names the allowed temp dir', () => {
+  const { rt } = boot();
+  rt.setAgent('root', 'buddha');
+  drive(rt, 'root', 'buddha', 'P3');
+  const d = rt.before('root', WRITE(PROJ));
+  assert.equal(d.allow, false);
+  assert.match(d.hint, /%TEMP%\\bazer\\<task>\\/);
+  assert.ok(d.hint.length <= 160);
+});
+
+test('U72 P3 exit with zero requirements stays and warns', () => {
+  const entries = [];
+  const { rt } = boot({ log: (e) => entries.push(e) });
+  rt.setAgent('root', 'buddha');
+  drive(rt, 'root', 'buddha', 'P3');
+  rt.remind('root');
+  const d = rt.before('root', TASK('poteto'));
+  assert.equal(d.allow, false);
+  assert.match(d.hint, /arena-runner started/);
+  assert.match(d.hint, /arena-judge done/);
+  assert.match(d.hint, />>skip/);
+  assert.ok(d.hint.length <= 160);
+  assert.equal(rt.info('root').phase, 'P3');
+  assert.match(rt.remind('root'), /^STOP\. P3 ARENA requires/);
+  assert.equal(rt.before('root', WRITE(PROJ)).allow, false);
+});
+
+test('U73 runner start + judge done opens the P3 exit and is logged', () => {
+  const entries = [];
+  const { rt } = boot({ log: (e) => entries.push(e) });
+  rt.setAgent('root', 'buddha');
+  drive(rt, 'root', 'buddha', 'P3');
+  rt.before('root', TASK('arena-runner'));
+  assert.ok(entries.some((e) => e.event === 'child' && e.kind === 'counted' && e.agent === 'arena-runner' && e.caller === 'buddha'));
+  rt.before('root', TASK('arena-judge'));
+  rt.after('root', { tool: 'task', subagent: 'arena-judge' });
+  assert.equal(rt.before('root', TASK('poteto')).allow, true);
+  rt.after('root', { tool: 'task', subagent: 'poteto' });
+  assert.equal(rt.info('root').phase, 'P5');
+});
+
+test('U74 denied child never counts; >>skip still advances', () => {
+  const { rt } = boot();
+  rt.setAgent('root', 'buddha');
+  drive(rt, 'root', 'buddha', 'P3');
+  assert.equal(rt.before('root', TASK('builder')).allow, false);
+  rt.before('root', TASK('arena-runner'));
+  rt.after('root', { tool: 'task', subagent: 'arena-runner', error: true });
+  assert.equal(rt.before('root', TASK('poteto')).allow, false);
+  assert.equal(rt.info('root').phase, 'P3');
+  rt.userChat({ sid: 'root', agent: 'buddha', messageId: 'skip1', text: '>>skip' });
+  assert.equal(rt.info('root').phase, 'P4');
+});
+
+test('U75 null sinks are reads; a real redirect is a write', () => {
+  for (const cmd of ['echo hi 2>/dev/null', 'echo hi > /dev/null', 'echo hi 2>$null', 'echo hi 2>nul']) {
+    assert.equal(looksLikeWrite(cmd), false, cmd);
+  }
+  assert.equal(looksLikeWrite('echo hi > out.txt'), true);
+});
+
+test('U76 flows without requires keep advancing', () => {
+  const { rt } = boot();
+  rt.setAgent('root', 'bazer');
+  drive(rt, 'root', 'bazer', 'B4');
+  rt.after('root', { tool: 'task', subagent: 'builder' });
+  assert.equal(rt.info('root').phase, 'B5');
+});
+
+const TMP = os.tmpdir();
+const RT_WSL = (p) => String(p).replace(/\\/g, '/').replace(/^([A-Za-z]):/, (m, d) => '/mnt/' + d.toLowerCase());
+
+test('U77 temp roots cover %TEMP%\\bazer and %TEMP%\\opencode', () => {
+  const { rt } = boot();
+  rt.setAgent('root', 'buddha');
+  rt.setAgent('child', 'plannotator');
+  rt.linkSession('child', 'root');
+  drive(rt, 'root', 'buddha', 'P2');
+  const ok = [
+    { tool: 'write', path: path.join(TMP, 'opencode', 'bazer', 'hello10', 'plan-gate1.md') },
+    { tool: 'shell', command: 'New-Item -ItemType Directory -Force -Path "' + path.join(TMP, 'opencode', 'bazer', 'hello10') + '" | Out-Null; "ok"' },
+    { tool: 'shell', command: 'mkdir "' + path.join(TMP, 'opencode', 'bazer', 'hello10') + '" 2>$null; echo "created"' },
+  ];
+  for (const req of ok) assert.equal(rt.before('child', req).allow, true, JSON.stringify(req));
+  const bad = [
+    { tool: 'write', path: path.join(TMP, 'x.txt') },
+    { tool: 'write', path: path.join(TMP, 'other', 'x.txt') },
+    { tool: 'write', path: path.join(TMP, 'opencodeX', 'x.txt') },
+    { tool: 'write', path: path.join(TMP, 'opencode', '..', 'x.txt') },
+  ];
+  for (const req of bad) assert.equal(rt.before('child', req).allow, false, JSON.stringify(req));
+  const wsl = RT_WSL(TMP);
+  assert.equal(rt.before('child', { tool: 'shell', command: 'bash -c "echo hi > ' + wsl + '/opencode/bazer/x.txt"' }).allow, true);
+  assert.equal(rt.before('child', { tool: 'shell', command: 'bash -c "echo hi > ' + wsl + '/bazer/x.txt"' }).allow, true);
+  const prot = rt.before('child', { tool: 'shell', command: 'Set-Content "' + os.homedir() + '\\.config\\opencode\\x" hi' });
+  assert.equal(prot.detail, 'protected');
+});
+
+test('U78 escaped quotes around redirect targets are stripped', () => {
+  const { rt } = boot();
+  rt.setAgent('root', 'buddha');
+  rt.setAgent('child', 'plannotator');
+  rt.linkSession('child', 'root');
+  drive(rt, 'root', 'buddha', 'P3');
+  const target = path.join(TMP, 'bazer', 'hello10-arena', 'candidate-1', 'hello10.txt');
+  const cmd = 'cmd /c "echo hi > `"' + target + '`"" ; echo "exit: $LASTEXITCODE"';
+  assert.equal(rt.before('child', { tool: 'shell', command: cmd }).allow, true, 'backtick quoted');
+  const bs = 'bash -c "echo hi > \\"' + target + '\\""';
+  assert.equal(rt.before('child', { tool: 'shell', command: bs }).allow, true, 'backslash quoted');
+  assert.equal(rt.before('child', { tool: 'shell', command: cmd.replace(path.join(TMP, 'bazer'), 'C:\\proj') }).allow, false);
+  assert.equal(rt.before('child', { tool: 'shell', command: 'cmd /c "echo hi > `"$v\\x.txt`""' }).detail, 'unresolved-var');
+  assert.equal(rt.before('child', { tool: 'shell', command: 'echo hi > C:\\proj\\x.txt' }).allow, false);
+});
+
+test('U79 multi-line and semicolon commands are checked per statement', () => {
+  const { rt } = boot();
+  rt.setAgent('root', 'buddha');
+  rt.setAgent('child', 'arena-runner');
+  rt.linkSession('child', 'root');
+  drive(rt, 'root', 'buddha', 'P3');
+  const dir = path.join(TMP, 'bazer', 'hello10-arena', 'candidate-3');
+  const cases = [
+    'Remove-Item "' + dir + '\\hello10.txt" -ErrorAction SilentlyContinue\nSet-Content -Path "' + dir + '\\hello10.txt" -Value "hi"',
+    'Remove-Item -LiteralPath "' + dir + '\\a.txt"; Set-Content -LiteralPath "' + dir + '\\a.txt" -Value "x"',
+    'Set-Content "' + dir + '\\b.txt" "x" -NoNewline -Encoding utf8',
+    'Set-Content -Path "' + dir + '\\c.txt" -Value "x" -NoNewline -Encoding utf8',
+  ];
+  for (const cmd of cases) assert.equal(rt.before('child', { tool: 'shell', command: cmd }).allow, true, cmd.slice(0, 50));
+  assert.equal(rt.before('child', { tool: 'shell', command: 'Set-Content "' + dir + '\\a.txt" "x"\nSet-Content "C:\\proj\\b.txt" "y"' }).allow, false);
+});
+
+const APPROVED_REAL = JSON.stringify({ content: [{ type: 'text', text: 'Plan approved! Saved to: C:\\Users\\Bazer\\.plannotator\\plans\\gate-1-arena-plan-2026.md' }] });
+const FEEDBACK_REAL = JSON.stringify({ content: [{ type: 'text', text: 'YOUR PLAN WAS NOT APPROVED.\n\nPlan changes requested' }] });
+const UNKNOWN_REAL = JSON.stringify({ content: [{ type: 'text', text: 'something else entirely' }] });
+
+test('U80 gate tool result advances once; wrong tool/caller/phase ignored', () => {
+  const store = memStore();
+  const a = boot({ store }).rt;
+  a.setAgent('root', 'buddha');
+  a.setAgent('child', 'plannotator');
+  a.linkSession('child', 'root');
+  drive(a, 'root', 'buddha', 'P2');
+  a.after('child', { tool: 'submit_plan', id: 'gt1', output: APPROVED_REAL });
+  assert.equal(a.info('root').phase, 'P3');
+  a.after('child', { tool: 'submit_plan', id: 'gt1', output: APPROVED_REAL });
+  assert.equal(a.info('root').phase, 'P3');
+  for (let i = 0; i < 4; i++) { const b = boot({ store }).rt; b.setAgent('root', 'buddha'); b.setAgent('child', 'plannotator'); b.linkSession('child', 'root'); b.after('child', { tool: 'submit_plan', id: 'gt1', output: APPROVED_REAL }); }
+  assert.equal(a.info('root').phase, 'P3');
+
+  const { rt } = boot();
+  rt.setAgent('root', 'buddha'); rt.setAgent('child', 'plannotator'); rt.linkSession('child', 'root');
+  drive(rt, 'root', 'buddha', 'P2');
+  rt.after('child', { tool: 'shell', id: 'sh1', output: APPROVED_REAL });
+  rt.after('child', { tool: 'read', id: 'rd1', output: APPROVED_REAL });
+  assert.equal(rt.info('root').phase, 'P2');
+  rt.after('stranger', { tool: 'submit_plan', id: 'gt2', output: APPROVED_REAL });
+  assert.equal(rt.info('root').phase, 'P2');
+  rt.after('root', { tool: 'submit_plan', id: 'gt3', output: UNKNOWN_REAL });
+  assert.equal(rt.info('root').phase, 'P2');
+  rt.after('root', { tool: 'submit_plan', id: 'gt4', output: FEEDBACK_REAL });
+  assert.equal(rt.info('root').phase, 'P2');
+  assert.equal(rt.badge('root'), 'P2 GATE1 r2');
+  drive(rt, 'root', 'buddha', 'P3');
+  rt.after('child', { tool: 'submit_plan', id: 'gt5', output: APPROVED_REAL });
+  assert.equal(rt.info('root').phase, 'P3');
+});
+
+test('U81 plan log carries tool, sid6, agent, head for gate tools', () => {
+  const entries = [];
+  const { rt } = boot({ log: (e) => entries.push(e) });
+  rt.setAgent('root', 'buddha'); rt.setAgent('child', 'plannotator'); rt.linkSession('child', 'root');
+  drive(rt, 'root', 'buddha', 'P2');
+  rt.after('child', { tool: 'submit_plan', id: 'log1', output: UNKNOWN_REAL });
+  const line = entries.filter((e) => e.event === 'plan').pop();
+  assert.equal(line.tool, 'submit_plan');
+  assert.equal(line.agent, 'plannotator');
+  assert.match(line.head, /^something else/);
+  assert.equal(line.head.length <= 160, true);
+});
+
+test('U82 gate-cli-after only for remembered calls and once per callId', () => {
+  const entries = [];
+  const { rt } = boot({ log: (e) => entries.push(e) });
+  rt.setAgent('root', 'bazer'); rt.setAgent('child', 'plannotator'); rt.linkSession('child', 'root');
+  drive(rt, 'root', 'bazer', 'B3');
+  rt.gateEvent('child', 'nope', ['nothing']);
+  rt.after('child', { tool: 'submit_plan', id: 'p1', output: 'plain' });
+  assert.equal(entries.filter((e) => e.event === 'gate-cli-after').length, 0);
+  rt.before('child', { tool: 'shell', command: V4, id: 'g9' });
+  rt.after('child', { tool: 'shell', id: 'g9', output: '{"decision":"approved"}' });
+  rt.after('child', { tool: 'shell', id: 'g9', output: '{"decision":"approved"}' });
+  assert.equal(entries.filter((e) => e.event === 'gate-cli-after' && e.callId6 === 'g9').length, 1);
+});
+
+test('U83 in-command assignments resolve through env, conflicts stay unresolved', () => {
+  const tmp = os.tmpdir();
+  const { rt } = boot({ env: { TEMP: tmp, TMP: tmp } });
+  rt.setAgent('root', 'buddha'); rt.setAgent('child', 'plannotator'); rt.linkSession('child', 'root');
+  drive(rt, 'root', 'buddha', 'P3');
+  const good = '$dir = "' + tmp + '\\bazer\\hello11\\candidate-1"\nNew-Item -ItemType Directory -Path $dir -Force | Out-Null\n$sw = [Diagnostics.Stopwatch]::StartNew()\ncmd /c "echo hi> `"$dir\\hello11.txt`""';
+  assert.equal(rt.before('child', { tool: 'shell', command: good }).allow, true, 'evidence 2');
+  const proj = '$dir = "C:\\proj\\x"\nSet-Content "$dir\\a.txt" hi';
+  assert.equal(rt.before('child', { tool: 'shell', command: proj }).allow, false);
+  const reassigned = '$dir = "' + tmp + '\\bazer\\a"\n$dir = "C:\\proj\\b"\nSet-Content "$dir\\a.txt" hi';
+  assert.equal(rt.before('child', { tool: 'shell', command: reassigned }).detail, 'unresolved-var');
+  assert.equal(rt.before('child', { tool: 'shell', command: 'Set-Content "$nope\\a.txt" hi' }).detail, 'unresolved-var');
+  const prot = '$cfg = "' + os.homedir() + '\\.config\\opencode"\nSet-Content "$cfg\\x.json" hi';
+  assert.equal(rt.before('child', { tool: 'shell', command: prot }).detail, 'protected');
+});
+
+test('U84 synthetic head only for short text', () => {
+  const entries = [];
+  const { rt } = boot({ log: (e) => entries.push(e) });
+  rt.setAgent('root', 'buddha');
+  const evt = (text, id) => toInboxUser({ type: 'session.inbox.enqueued', data: { sessionID: 'root', inboxID: id, item: { type: 'synthetic', payload: { text } } } });
+  rt.inboxUser(evt('short note', 'hd1'));
+  rt.inboxUser(evt('x'.repeat(120), 'hd2'));
+  const syn = entries.filter((e) => e.event === 'synthetic');
+  assert.equal(syn[0].head, 'short note');
+  assert.equal(syn[1].head, undefined);
+});
+
+test('U85 P3 exit needs runner started + judge done; re-runs stay in P3', () => {
+  const { rt } = boot();
+  rt.setAgent('root', 'buddha');
+  drive(rt, 'root', 'buddha', 'P3');
+  const miss = rt.before('root', TASK('poteto'));
+  assert.equal(miss.allow, false);
+  assert.match(miss.hint, /arena-runner started \(min 1\)/);
+  assert.match(miss.hint, /arena-judge done \(min 1\)/);
+  assert.ok(miss.hint.length <= 160);
+  rt.before('root', TASK('arena-runner'));
+  rt.before('root', TASK('arena-runner'));
+  assert.equal(rt.info('root').phase, 'P3');
+  rt.before('root', TASK('arena-judge'));
+  rt.after('root', { tool: 'task', subagent: 'arena-judge', status: 'running' });
+  assert.equal(rt.before('root', TASK('poteto')).allow, false);
+  rt.after('root', { tool: 'task', subagent: 'arena-judge', error: true });
+  assert.equal(rt.before('root', TASK('poteto')).allow, false);
+  rt.before('root', TASK('arena-judge'));
+  rt.after('root', { tool: 'task', subagent: 'arena-judge' });
+  assert.equal(rt.before('root', TASK('poteto')).allow, true);
+  rt.after('root', { tool: 'task', subagent: 'poteto' });
+  assert.equal(rt.info('root').phase, 'P5');
+});
+
+test('U86 error result undoes a provisionally counted start', () => {
+  const entries = [];
+  const { rt } = boot({ log: (e) => entries.push(e) });
+  rt.setAgent('root', 'buddha');
+  drive(rt, 'root', 'buddha', 'P3');
+  rt.before('root', TASK('arena-runner'));
+  rt.after('root', { tool: 'task', subagent: 'arena-runner', error: true, id: 'run-err' });
+  assert.match(rt.before('root', TASK('poteto')).hint, /arena-runner started/);
+  assert.ok(entries.some((e) => e.event === 'child' && e.kind === 'failed' && e.phase === 'P3' && e.agent === 'arena-runner'));
+});
+
+test('U87 arena-runner/judge write only under temp at any phase', () => {
+  const { rt } = boot();
+  rt.setAgent('root', 'buddha');
+  rt.setAgent('run', 'arena-runner');
+  rt.setAgent('judge', 'arena-judge');
+  rt.linkSession('run', 'root');
+  rt.linkSession('judge', 'root');
+  drive(rt, 'root', 'buddha', 'P6');
+  for (const sid of ['run', 'judge']) {
+    const proj = rt.before(sid, WRITE(PROJ));
+    assert.equal(proj.allow, false, sid);
+    assert.match(proj.hint, /%TEMP%\\bazer\\<task>\\/, sid);
+    assert.equal(rt.before(sid, WRITE(TEMP)).allow, true, sid);
+    assert.equal(rt.before(sid, SHELL('echo hi > "C:\\proj\\a.txt"')).allow, false, sid);
+    assert.equal(rt.before(sid, SHELL('git status --porcelain')).allow, true, sid);
+  }
+});
+
+test('U88 old state migrates to start with a notice and log', () => {
+  const store = memStore();
+  const { rt } = boot({ store });
+  rt.setAgent('root', 'buddha');
+  store.set('root.buddha', { v: 1, flow: 'buddha', phase: 'P3', expect: 'arena', at: NOW, lastEventAt: NOW });
+  const entries = [];
+  const { rt: rt2 } = boot({ store, log: (e) => entries.push(e) });
+  assert.equal(rt2.info('root').phase, 'P0');
+  assert.ok(entries.some((e) => e.event === 'migrate' && e.from === 'P3' && e.to === 'P0'));
+  const note = rt2.remind('root');
+  assert.match(note, /migrated/i);
+  assert.ok(note.length <= 160);
+});
+
+test('U89 task-after logs caller, subagent, status, head once per call', () => {
+  const entries = [];
+  const { rt } = boot({ log: (e) => entries.push(e) });
+  rt.setAgent('root', 'buddha');
+  drive(rt, 'root', 'buddha', 'P1');
+  const out = JSON.stringify({ content: [{ type: 'text', text: 'survey done' }] });
+  rt.after('root', { tool: 'task', subagent: 'poteto', id: 't-ok', status: 'completed', output: out });
+  rt.after('root', { tool: 'task', subagent: 'poteto', id: 't-ok', status: 'completed', output: out });
+  rt.after('root', { tool: 'task', subagent: 'poteto', id: 't-err', status: 'error', error: true, output: 'boom' });
+  rt.after('root', { tool: 'task', subagent: 'poteto', id: 't-run', status: 'running', output: 'still going' });
+  const rows = entries.filter((e) => e.event === 'task-after');
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows.map((r) => [r.caller, r.subagent, r.status]), [['buddha', 'poteto', 'ok'], ['buddha', 'poteto', 'error'], ['buddha', 'poteto', 'running']]);
+  assert.equal(rows[0].head, 'survey done');
+  assert.ok(rows.every((r) => r.sid6 === 'root'));
+});
+
+test('U90 badge is phase-derived and <=12 chars', () => {
+  const { rt } = boot();
+  rt.setAgent('root', 'buddha');
+  drive(rt, 'root', 'buddha', 'P2');
+  assert.equal(rt.badge('root'), 'P2 GATE1 r1');
+  rt.after('root', { tool: 'submit_plan', output: '{"decision":"annotated"}' });
+  assert.equal(rt.badge('root'), 'P2 GATE1 r2');
+  drive(rt, 'root', 'buddha', 'P3');
+  assert.equal(rt.badge('root'), 'P3 ARENA');
+  assert.ok(['P2 GATE1 r2', 'P3 ARENA'].every((b) => b.length <= 12));
+});
+
+test('U91 no agent named arena in spec; P3 expects the flow root', () => {
+  for (const [fid, f] of Object.entries(spec.flows)) {
+    for (const [pid, p] of Object.entries(f.phases)) {
+      assert.notEqual(p.expect, 'arena', fid + pid);
+      assert.equal((p.also || []).includes('arena'), false, fid + pid);
+    }
+  }
+  assert.equal(spec.flows.buddha.phases.P3.expect, 'buddha');
+  assert.equal(spec.tempOnly.includes('arena-runner'), true);
+});
+
+test('U92 BUDDHA patterns classify correctly at P0/P1/P3/P4 and runner temp', () => {
+  const tmp = os.tmpdir();
+  const dir = (n) => 'New-Item -ItemType Directory -Path "' + path.join(tmp, 'bazer', 'hello12', n) + '" -Force | Out-Null';
+  for (const phase of ['P0', 'P1', 'P3', 'P4']) {
+    const { rt } = boot();
+    rt.setAgent('root', 'buddha');
+    drive(rt, 'root', 'buddha', phase);
+    assert.equal(rt.before('root', WRITE(path.join(tmp, 'bazer', 'hello12', 'context-pack.md'))).allow, true, phase + ' temp write');
+    assert.equal(rt.before('root', SHELL(dir('candidate-1'))).allow, true, phase + ' new-item');
+    assert.equal(rt.before('root', SHELL('git status --porcelain')).allow, true, phase + ' git');
+    assert.equal(rt.before('root', WRITE(PROJ)).allow, false, phase + ' proj write');
+    assert.equal(rt.before('root', SHELL('New-Item -ItemType Directory -Path "C:\\proj\\x" -Force')).allow, false, phase + ' proj dir');
+    assert.equal(rt.before('root', SHELL('Set-Content "C:\\proj\\a.txt" hi')).allow, false, phase + ' set-content');
+  }
+  const { rt } = boot();
+  rt.setAgent('root', 'buddha');
+  rt.setAgent('run', 'arena-runner');
+  rt.linkSession('run', 'root');
+  drive(rt, 'root', 'buddha', 'P3');
+  assert.equal(rt.before('run', WRITE(path.join(tmp, 'bazer', 'hello12', 'candidate-1', 'a.md'))).allow, true);
+  assert.equal(rt.before('run', WRITE(PROJ)).allow, false);
+});
+
+test('U93 migration keeps valid state on version-only drift', () => {
+  const store = memStore();
+  const entries = [];
+  store.set('root.bazer', { v: 1, flow: 'bazer', phase: 'B4', expect: 'builder', at: NOW, lastEventAt: NOW, feedback: { B3: 2 }, req: { builder: { started: 1, done: 0 } }, pending: 0, planErrors: 0, errors: 0, approvals: {}, skipped: [] });
+  store.set('two.buddha', { v: 1, flow: 'buddha', phase: 'P5', expect: 'plannotator', at: NOW, lastEventAt: NOW, feedback: { P2: 2 } });
+  const { rt } = boot({ store, log: (e) => entries.push(e) });
+  rt.setAgent('root', 'bazer');
+  rt.setAgent('two', 'buddha');
+  assert.equal(rt.info('root').phase, 'B4');
+  assert.equal(rt.before('root', TASK('builder')).allow, true);
+  assert.equal(rt.badge('two'), 'P5 GATE2 r3');
+  rt.info('root');
+  const mig = entries.filter((e) => e.event === 'migrate');
+  assert.equal(mig.length, 2);
+  assert.ok(mig.every((e) => e.kind === 'keep'));
+  const saved = store.get('root.bazer');
+  assert.equal(saved.v, spec.version);
+  assert.equal(saved.phase, 'B4');
+  assert.equal(saved.expect, 'builder');
+  assert.equal(saved.feedback.B3, 2);
+  assert.equal(saved.req.builder.started, 1);
+  assert.equal(store.get('two.buddha').feedback.P2, 2);
+});
+
+test('U94 migration resets only on unknown phase or changed expect', () => {
+  const store = memStore();
+  const entries = [];
+  store.set('r1.buddha', { v: 2, flow: 'buddha', phase: 'P3', expect: 'arena', at: NOW, lastEventAt: NOW });
+  store.set('r2.buddha', { v: 2, flow: 'buddha', phase: 'P9', at: NOW, lastEventAt: NOW });
+  const { rt } = boot({ store, log: (e) => entries.push(e) });
+  rt.setAgent('r1', 'buddha');
+  rt.setAgent('r2', 'buddha');
+  assert.equal(rt.info('r1').phase, 'P0');
+  assert.equal(rt.info('r2').phase, 'P0');
+  const mig = entries.filter((e) => e.event === 'migrate');
+  assert.equal(mig.length, 2);
+  assert.ok(mig.every((e) => e.kind === 'reset' && e.to === 'P0'));
+  assert.match(rt.remind('r1'), /migrated/i);
+});
+
+test('U95 task error head carries the error text; shape logged once per process', () => {
+  const box = globalThis[Symbol.for('bazer.flow.shared')];
+  if (box) box.esh = false;
+  const entries = [];
+  const { rt } = boot({ log: (e) => entries.push(e) });
+  rt.setAgent('root', 'buddha');
+  drive(rt, 'root', 'buddha', 'P3');
+  rt.before('root', TASK('arena-runner'));
+  rt.after('root', { tool: 'task', subagent: 'arena-runner', id: 'e1', status: 'error', error: true, errorText: 'Error: spawn failed at C:/secret/path' });
+  rt.after('root', { tool: 'task', subagent: 'arena-runner', id: 'e2', status: 'error', error: true, errorText: 'second error text ' + 'x'.repeat(300) });
+  const rows = entries.filter((e) => e.event === 'task-after');
+  assert.equal(rows[0].status, 'error');
+  assert.equal(rows[0].head, 'Error: spawn failed at C:/secret/path');
+  assert.equal(rows[1].head.length, 160);
+  const shapes = entries.filter((e) => e.event === 'task-err-shape');
+  assert.equal(shapes.length, 1);
+  assert.match(shapes[0].shape, /error:(boolean|s\d+)/);
+  assert.equal(JSON.stringify(shapes[0]).includes('spawn failed'), false);
+  assert.equal(JSON.stringify(shapes[0]).includes('secret'), false);
+});
+
+test('U97 same-state gate-cli rows once per callId per process', () => {
+  const entries = [];
+  const { rt } = boot({ log: (e) => entries.push(e) });
+  rt.setAgent('root', 'buddha');
+  rt.setAgent('child', 'plannotator');
+  rt.linkSession('child', 'root');
+  drive(rt, 'root', 'buddha', 'P2');
+  rt.rememberGate('g97');
+  for (let i = 0; i < 3; i++) rt.gateEvent('child', 'g97', ['no decision yet'], {});
+  assert.equal(entries.filter((e) => e.event === 'gate-cli' && e.from === e.to).length, 1);
 });
 
 test('U19 subagent session gets no reminder', () => {

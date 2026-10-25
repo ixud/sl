@@ -5,8 +5,7 @@
 ```
 AGENT/
 ├─ 01PRIMARY/      โหมดหลัก 4 ตัว (ผู้ใช้สลับด้วย Shift+Tab)
-├─ 02SUBAGENT/     ตัวช่วยที่โหมดหลักเรียก
-│  └─ SUBSUBAGENT/ ตัวช่วยของ Arena
+├─ 02SUBAGENT/     ตัวช่วยที่โหมดหลักเรียก (Arena: BUDDHA เรียก arena-runner/arena-judge เอง)
 ├─ 03SKILLS/       ความรู้/กระบวนการ (PSTACK + BAZER)
 └─ 04PLUGIN/       โค้ดปลั๊กอิน (ที่เดียวใน MAJOR ที่เป็นโค้ดได้)
 ```

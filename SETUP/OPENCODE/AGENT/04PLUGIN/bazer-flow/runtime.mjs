@@ -3,7 +3,11 @@
    State and meta are read from the store on every access (no in-memory state cache). */
 import { loadSpec, init, check, apply, remind, badge as engineBadge, serialize, deserialize } from './engine.mjs';
 import { isTempPath, looksLikeWrite, shellTouchesTemp, defaultTempRoots, isProtectedPath, protectedInCommand, isGateCliCommand, gateCliVerdict, shellWrite, resolveShellVars, expandShell } from './paths.mjs';
-import { shapeDeep, stringLeaves } from './diag.mjs';
+import { shapeDeep, stringLeaves, hasKey } from './diag.mjs';
+import { createShellMap, shellIdFrom, shellEndLeaves, RUNNING_HINT } from './shellend.mjs';
+import { denyHint, tempOnlyHint, migrateOf, taskAfter, taskStatus, requiredAgent } from './child.mjs';
+import { gateToolOutcome, gateToolHead, toolLeaves, classifyPlanResult, lastGateDecision } from './gatetool.mjs';
+export { classifyPlanResult } from './gatetool.mjs';
 import os from 'node:os';
 
 const META_KEY = 'meta';
@@ -22,48 +26,6 @@ const rawOf = (v) => String(v == null ? '' : v).slice(0, 120);
 /** Version of the Plannotator OpenCode plugin whose output strings we classify. */
 export const PLANNOTATOR_VERSION = '0.28.23';
 
-/** Anchored classification: only the START of the trimmed output counts
-    (or a leading `{"decision":"…"}` object). Never a substring search. */
-export function classifyPlanResult(output) {
-  if (typeof output !== 'string') return 'pending';
-  const text = output.trim();
-  if (!text) return 'pending';
-  if (/^\{"decision"\s*:\s*"annotated"/i.test(text)) return 'feedback';
-  if (/^\{"decision"\s*:\s*"approved"/i.test(text)) return 'approved';
-  if (/^\{"decision"\s*:\s*"pending"/i.test(text)) return 'pending';
-  if (/^\{"decision"\s*:\s*"denied"/i.test(text)) return 'feedback';
-  if (text.startsWith('{')) {
-    try {
-      const parsed = JSON.parse(text);
-      const decision = parsed && typeof parsed.decision === 'string' ? parsed.decision.toLowerCase() : '';
-      if (decision === 'approved') return 'approved';
-      if (decision === 'annotated' || decision === 'denied') return 'feedback';
-      if (decision === 'pending') return 'pending';
-      if (decision === 'error') return 'error';
-    } catch { /* not a whole-output object */ }
-  }
-  if (/^YOUR PLAN WAS NOT APPROVED/i.test(text)) return 'feedback';
-  if (/^Plan changes requested/i.test(text)) return 'feedback';
-  if (/^Plan approved with notes!/i.test(text)) return 'approved';
-  if (/^Plan approved!/i.test(text)) return 'approved';
-  if (/^approved:\s*true/i.test(text)) return 'approved';
-  if (/^approved:\s*false/i.test(text) && /feedback|changes/i.test(text)) return 'feedback';
-  if (/^\[Plannotator\] Failed to open plan review/i.test(text)) return 'error';
-  if (/^Error[: ]/.test(text)) return 'error';
-  return 'pending';
-}
-
-/** Last output line that is exactly one JSON object carrying a string `decision`. */
-export function lastGateDecision(output) {
-  const lines = String(output == null ? '' : output).split(/\r?\n/);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line.startsWith('{') || !line.endsWith('}')) continue;
-    try { const parsed = JSON.parse(line); if (parsed && typeof parsed.decision === 'string') return parsed.decision.toLowerCase(); } catch { /* not this line */ }
-  }
-  return null;
-}
-
 export function createRuntime({ spec, store, now, log, badgeSink, home, env: envIn = {} } = {}) {
   const clock = typeof now === 'function' ? now : () => Date.now();
   const ENV = Object.assign({}, process.env, envIn || {});
@@ -81,6 +43,7 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
 
   const calls = new Map();
   const temps = defaultTempRoots();
+  const shells = createShellMap(store);
 
   function readMeta() {
     const m = store.get(META_KEY);
@@ -139,20 +102,30 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
 
   function getState(root, flow) {
     const key = root + '.' + flow;
-    let s = null;
     const stored = store.get(key);
+    let s = null;
     if (stored) {
-      try { s = deserialize(stored, clock()); } catch { s = null; }
+      const mig = migrateOf(stored, spec, flow);
+      try { s = mig && mig.kind === 'reset' ? null : deserialize(stored, clock()); } catch { s = null; }
+      if (mig) {
+        const b = sharedBox(); const mk = 'mig:' + key + ':' + mig.kind + ':' + mig.from;
+        if (!b.mig.has(mk)) { b.mig.add(mk); gateLog({ event: 'migrate', kind: mig.kind, flow, from: mig.from, to: mig.to }); }
+        store.set(key, serialize(s || init(flow, undefined, clock())));
+        if (mig.notice) store.set('notice.' + key, { text: mig.notice });
+      }
     }
     if (!s || s.flow !== flow) s = init(flow, undefined, clock());
     return s;
   }
 
-  function record(root, flow, prev, next, event, extra) {
+  function record(root, flow, prev, next, event, extra, onceKey) {
     store.set(root + '.' + flow, serialize(next));
+    const b = onceKey ? sharedBox() : null;
+    const skip = b ? b.gcl.has(onceKey) : false;
+    if (b) b.gcl.add(onceKey);
     const entry = { at: clock(), root, flow, from: prev ? prev.phase : null, to: next.phase, event };
     if (extra) Object.assign(entry, extra);
-    if (typeof log === 'function') {
+    if (typeof log === 'function' && !skip) {
       try { log(entry); } catch { /* logging never breaks the gate */ }
     }
     if (typeof badgeSink === 'function') {
@@ -187,7 +160,7 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
 
   function sharedBox() {
     const box = globalThis[Symbol.for('bazer.flow.shared')] || (globalThis[Symbol.for('bazer.flow.shared')] = {});
-    box.checks = box.checks || new Set(); box.dups = box.dups || new Set(); box.plain = box.plain || new Set();
+    box.checks = box.checks || new Set(); box.dups = box.dups || new Set(); box.plain = box.plain || new Set(); box.sh = box.sh || new Set(); box.gca = box.gca || new Set(); box.mig = box.mig || new Set(); box.ta = box.ta || new Set(); box.gcl = box.gcl || new Set();
     return box;
   }
 
@@ -245,20 +218,26 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
     if (!flow) {
       const agent = agentOf(id) || agentOf(root);
       const path = req && req.tool === 'write' ? String(req.path || '') : '';
-      const orphan = subagentIds.has(agent) && path && !isTempPath(path, temps);
+      const to = (spec.tempOnly || []).includes(agent);
+      const orphan = (subagentIds.has(agent) || to) && path && !isTempPath(path, temps);
       return {
         root,
         flow: null,
         state: null,
         ask: null,
-        verdict: orphan ? { allow: false, hint: ORPHAN_HINT } : { allow: true, hint: '' },
+        verdict: orphan ? { allow: false, hint: to ? tempOnlyHint(agent) : ORPHAN_HINT } : { allow: true, hint: '' },
       };
     }
     const state = getState(root, flow);
     const ask = engineReq(req);
+    const tempAgent = (spec.tempOnly || []).includes(agentOf(id));
+    if (tempAgent && ask.t === 'write' && ask.scope === 'project') return { root, flow, state, ask, verdict: { allow: false, hint: tempOnlyHint(agentOf(id)), detail: 'tempOnly' } };
     const verdict = check(state, ask);
     if (ask.detail) verdict.detail = ask.detail;
     if (!verdict.allow && DETAIL_HINT[ask.detail]) verdict.hint = DETAIL_HINT[ask.detail];
+    const ph = flow ? spec.flows[flow]?.phases[state.phase] : null;
+    if (!verdict.allow && ph?.gate && shells.running(id, root)) { verdict.hint = RUNNING_HINT; verdict.detail = 'running'; }
+    if (!verdict.allow && ph && !verdict.detail) { const h = denyHint(flow, state.phase, ph, spec, ask); if (h) verdict.hint = h; }
     return { root, flow, state, ask, verdict };
   }
 
@@ -272,6 +251,9 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
       if (r.ask.t === 'subagent') {
         const next = apply(r.state, { t: 'subagent', name: r.ask.name, phase: 'start' }, clock());
         if (!same(next, r.state)) record(r.root, r.flow, r.state, next, 'task.start');
+        const before = (r.state.req && r.state.req[r.ask.name]) || {};
+        const after = (next.req && next.req[r.ask.name]) || {};
+        if ((after.started || 0) > (before.started || 0)) gateLog({ event: 'child', kind: 'counted', phase: next.phase, agent: r.ask.name, caller: agentOf(sid) || r.flow });
       }
     }
     return r.verdict;
@@ -286,39 +268,75 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
     if (typeof log !== 'function') return;
     try { log({ at: clock(), ...entry }); } catch { /* logging never breaks the gate */ }
   }
-  function applyGate(sid, callId, leaves, via, shape, error) {
-    const gid = String(callId || ''), id = String(sid || '');
-    const root = rootOf(id), flow = flowOf(root);
+  function applyGate(sid, callId, leaves, via, shape, error, meta, toolMode) {
+    const gid = String(callId || ''), id = String(sid || ''); const root = rootOf(id), flow = flowOf(root);
+    const isTool = !!toolMode && Array.isArray(spec.gateTools) && spec.gateTools.includes(String((meta && meta.tool) || ''));
+    if (!isTool && !gateHas(gid)) return null;
     const text = candidateText(leaves);
     const base = { event: 'gate-cli-after', via, callId6: gid.slice(-6), shape, tail: text.slice(-100) };
-    const put = (x) => gateLog({ ...base, ...x });
+    const put = (x) => { const b = sharedBox(); const key = 'gca:' + (gid || via); if (b.gca.has(key)) return; b.gca.add(key); gateLog({ ...base, ...x }); };
     if (!flow) { put({ why: 'flow' }); return null; }
     const state = getState(root, flow), phase = spec.flows[flow].phases[state.phase];
+    const head = gateToolHead(leaves);
     const decision = error ? '' : lastGateDecision(text);
-    const outcome = error ? 'error' : decision === 'approved' ? 'approved' : decision === 'annotated' ? 'feedback' : 'pending';
+    const pendingKind = error || isTool ? '' : /Timed out before completion/i.test(text) ? 'timeout' : /"status"\s*:\s*"running"/.test(text) || /status[:=]\s*running/i.test(text) ? 'running' : '';
+    const outcome = isTool ? (gateToolOutcome(head, !!error) || classifyPlanResult(String((meta && meta.raw) || ''))) : error ? 'error' : decision === 'approved' ? 'approved' : decision === 'annotated' ? 'feedback' : 'pending';
+    if (isTool) gateLog({ event: 'plan', tool: String((meta && meta.tool) || ''), sid6: id.slice(-6), agent: agentOf(id), head, outcome, raw: rawOf((meta && meta.raw) || head) });
     const decisive = outcome === 'approved' || outcome === 'feedback';
+    const caller = agentOf(id);
     let why = decisive && gid && seenList().includes('g:' + gid) ? 'dup'
-      : !gid || !gateHas(gid) ? 'no-call'
-        : !phase || !phase.gate ? 'not-gate'
-          : agentOf(id) !== phase.expect ? 'agent' : '';
+      : !phase || !phase.gate ? 'not-gate'
+        : caller !== phase.expect && !(isTool && caller === flow) ? 'agent' : '';
     if (why) {
-      if (why === 'no-call') return state;
       if (why === 'dup') { const b = sharedBox(); if (b.dups.has(gid)) return state; b.dups.add(gid); }
       put({ root, flow, from: state.phase, to: state.phase, why });
       return state;
     }
-    if (decisive) { seenOnce('g:' + gid); gateDrop(gid); }
+    if (pendingKind) {
+      const shid = shellIdFrom(meta, leaves); if (shid) shells.remember(shid, { callId: gid, sid: id, root, phase: state.phase, ts: clock() });
+      put({ root, flow, from: state.phase, to: state.phase, outcome: pendingKind }); return state;
+    }
+    if (decisive && gid) { seenOnce('g:' + gid); gateDrop(gid); }
     const next = apply(state, { t: 'plan', outcome }, clock());
-    put({ root, flow, from: state.phase, to: next.phase, outcome });
+    put({ root, flow, from: state.phase, to: next.phase, outcome: pendingKind || outcome });
     if (same(next, state)) return state;
-    record(root, flow, state, next, 'gate-cli');
+    record(root, flow, state, next, 'gate-cli', { callId6: gid.slice(-6) }, gid);
     return next;
   }
 
-  const gateEvent = (sid, callId, leaves) => applyGate(sid, callId, Array.isArray(leaves) ? leaves : [], 'event', shapeDeep(leaves || [], 3), false);
+  const gateEvent = (sid, callId, leaves, meta) => applyGate(sid, callId, Array.isArray(leaves) ? leaves : [], 'event', shapeDeep(leaves || [], 3), false, meta);
+
+  function shellEnded(data) {
+    const id = String((data && data.shell && data.shell.id) || ''); const entry = id ? shells.take(id) : null;
+    const leaves = shellEndLeaves(data);
+    const hasDec = hasKey(data || {}, new Set(['decision']));
+    const box = sharedBox();
+    if (id && !box.sh.has(id) && (entry || hasDec)) { box.sh.add(id); gateLog({ event: 'shell-evt', kind: 'ended', sid6: String((entry && entry.sid) || (data && data.sessionID) || '').slice(-6), mapped: !!entry, hasDecisionKey: hasDec, shape: shapeDeep(data || {}, 4, '', true) }); }
+    return entry ? applyGate(entry.sid, entry.callId, leaves, 'shell-ended', shapeDeep(leaves, 3, '', true), false, { shellID: id }) : null;
+  }
 
   function inboxUser(evt) {
     const itemType = String((evt && evt.itemType) || '');
+    if (itemType === 'synthetic') {
+      const b = sharedBox(); const mid = String((evt && evt.messageId) || '');
+      const dedupe = 'syn:' + mid;
+      if (!b.syn) b.syn = new Set();
+      if (!b.syn.has(dedupe)) {
+        b.syn.add(dedupe);
+        const payload = (evt && evt.payload) || {};
+        const where = info(evt && evt.sid);
+        gateLog({
+          event: 'synthetic',
+          sid6: String((evt && evt.sid) || '').slice(-6),
+          root6: where.root ? String(where.root).slice(-6) : null,
+          shape: shapeDeep(payload, 4, '', true),
+          hasDecisionKey: hasKey(payload, new Set(['decision'])),
+          hasShellId: hasKey(payload, new Set(['shellID', 'shellId', 'shell_id'])),
+          ...(typeof payload.text === 'string' && payload.text.length <= 80 ? { head: payload.text } : {}),
+        });
+      }
+      return { applied: false, why: 'item-type' };
+    }
     if (itemType !== 'user') { gateLog({ event: 'user', cmd: 'ignored', why: 'item-type', itemType }); return { applied: false, why: 'item-type' }; }
     const leaves = Array.isArray(evt && evt.leaves) ? evt.leaves : [];
     const cmd = leaves.map((s) => String(s).trim().toLowerCase()).find((s) => s === '>>approve' || s === '>>skip' || s === '>>abort');
@@ -343,6 +361,9 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
     if (res.tool === 'task') {
       const remembered = calls.get(String(res.id || '')) || '';
       const name = String(res.subagent || '') || remembered;
+      const tk = 'ta:' + id + ':' + String(res.id || name); const box = sharedBox();
+      if (!box.ta.has(tk)) { box.ta.add(tk); gateLog(taskAfter(id, res, name, agentOf(id) || flow)); }
+      if (res.error && !box.esh) { box.esh = true; gateLog({ event: 'task-err-shape', shape: shapeDeep(res, 4) }); }
       if (!name) {
         if (typeof log === 'function') {
           try { log({ at: clock(), root, flow, from: state.phase, to: state.phase, event: 'after-miss', tool: 'task', why: 'no subagent' }); } catch { /* logging never breaks the gate */ }
@@ -350,18 +371,24 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
         return state;
       }
       if (res.id) calls.delete(String(res.id));
-      next = apply(state, { t: 'subagent', name, phase: res.error ? 'error' : 'done' }, clock());
+      if (taskStatus(res) === 'running') return state; else next = apply(state, { t: 'subagent', name, phase: res.error ? 'error' : 'done' }, clock());
+      if (taskStatus(res) === 'error' && requiredAgent(spec.flows[flow].phases[state.phase], name)) gateLog({ event: 'child', kind: 'failed', phase: state.phase, agent: name });
+    } else if (Array.isArray(spec.gateTools) && spec.gateTools.includes(res.tool)) {
+      const rawOut = typeof res.output === 'string' ? res.output : JSON.stringify(res.output || '');
+      return applyGate(id, res.id, toolLeaves(res.output), 'gate-tool', shapeDeep(res, 3), !!res.error, { tool: res.tool, raw: rawOut }, true);
     } else if (res.tool === 'submit_plan') {
       next = apply(state, { t: 'plan', outcome: res.error ? 'error' : classifyPlanResult(res.output) }, clock());
     } else if (res.tool === 'shell') {
       const gid = String(res.id || '');
       if (!gid || !gateHas(gid)) return state;
       if (typeof log === 'function') { try { log({ at: clock(), event: 'after-seen', tool: res.tool, hasId: true }); } catch { /* logging never breaks the gate */ } }
-      return applyGate(id, gid, stringLeaves(res.output, 5), 'hook', shapeDeep(res, 3), !!res.error);
+      return applyGate(id, gid, stringLeaves(res.output, 5), 'hook', shapeDeep(res, 3), !!res.error, res.metadata);
     } else {
       return state;
     }
+    if (next.childBlocked && !state.childBlocked) gateLog({ event: 'child', kind: 'missing', phase: state.phase });
     if (same(next, state)) {
+      const mph = spec.flows[flow]?.phases[state.phase];
       if (res.tool === 'submit_plan' && typeof log === 'function') {
         const outcome = res.error ? 'error' : classifyPlanResult(res.output);
         try {
@@ -478,5 +505,5 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
     return from;
   }
 
-  return { rootOf, info, linkSession, setAgent, userMessage, userChat, before, peek, after, remind: remindFor, badge: badgeFor, purge, rememberGate, gateEvent, inboxUser };
+  return { rootOf, info, linkSession, setAgent, userMessage, userChat, before, peek, after, shellEnded, remind: remindFor, badge: badgeFor, purge, rememberGate, gateEvent, inboxUser };
 }

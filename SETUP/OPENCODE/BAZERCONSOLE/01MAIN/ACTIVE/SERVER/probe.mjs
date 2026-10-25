@@ -10,7 +10,7 @@ import { makeResolver } from './env.mjs';
 import { probes, manifest } from './manifest.mjs';
 import { policyLevel } from './plan.mjs';
 import { getAtPath } from './jsonc.mjs';
-import { readState } from './apply.mjs';
+import { readState, storeFor } from './apply.mjs';
 
 const run = (cmd, args = [], timeout = 20000) => {
   // Windows: `opencode` เป็น shim (.cmd/.ps1) — spawn ตรง ๆ จะ ENOENT ต้องผ่าน shell
@@ -210,8 +210,8 @@ const impl = {
         : `โหลดครบ ${p.ids.length} ตัว (ไฟล์ใหม่)${p.exact ? ' · ไม่มีโหมดเกิน' : ''}`,
     };
   },
-  'permission-level': (p, home) => {
-    const state = readState();
+  'permission-level': (p, home, store) => {
+    const state = readState(store);
     const perPolicy = (state.policies || {})[p.policy];
     const legacy = state.policy && state.policy.policyId === p.policy ? state.policy : null;
     const levelId = perPolicy?.level ?? legacy?.level;
@@ -323,12 +323,12 @@ const impl = {
 
 export const PROBE_KINDS = Object.keys(impl);
 
-export function runProbes(home) {  const results = [];
+export function runProbes(home, store = storeFor(home)) {  const results = [];
   for (const p of probes.probes) {
     const fn = impl[p.kind];
     if (!fn) { results.push({ id: p.id, title: p.title, ok: false, severity: p.severity, detail: `kind "${p.kind}" ไม่มี implementation` }); continue; }
     try {
-      const r = fn(p.params || {}, home);
+      const r = fn(p.params || {}, home, store);
       results.push({ id: p.id, title: p.title, severity: p.severity, ...r });
     } catch (e) {
       results.push({ id: p.id, title: p.title, ok: false, severity: p.severity, detail: e.message });
@@ -339,8 +339,8 @@ export function runProbes(home) {  const results = [];
 }
 
 /** ตรวจว่า entry ที่ประกาศ proof ผ่านจริง — ใช้ผล probe ที่รันมาแล้ว (ไม่รันซ้ำทั้งชุด) */
-export function verifyProofs(home, probeResult) {
-  const pr = probeResult || runProbes(home);
+export function verifyProofs(home, probeResult, store = storeFor(home)) {
+  const pr = probeResult || runProbes(home, store);
   const out = [];
   for (const e of manifest.entries) {
     if (!e.proof) continue;

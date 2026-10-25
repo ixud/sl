@@ -33,9 +33,9 @@ test('T02 bazer happy path: write denied B12,B3; allowed B4,B5', () => {
   assert.equal(project(st('bazer', 'B5')), true);
 });
 
-test('T03 arena start denied in P0,P1,P2 with hint naming phase and next step', () => {
+test('T03 subagent denied in P0,P1,P2 with hint naming phase and next step', () => {
   for (const p of ['P0', 'P1', 'P2']) {
-    const r = sub(st('buddha', p), 'arena');
+    const r = sub(st('buddha', p), 'builder');
     assert.equal(r.allow, false, p);
     assert.match(r.hint, new RegExp('\\b' + p + '\\b'));
     assert.match(r.hint, /next step/);
@@ -199,12 +199,25 @@ test('T17 deserialize fails closed on garbage, unknown phase/flow, expired', () 
   }
 });
 
+test('T21 requires gate exits; counters reset on move', () => {
+  const s = st('buddha', 'P3');
+  assert.equal(sub(s, 'poteto').allow, false);
+  const started = apply(s, { t: 'subagent', name: 'arena-runner', phase: 'start' }, NOW + 1);
+  assert.equal(started.req['arena-runner'].started, 1);
+  const done = apply(started, { t: 'subagent', name: 'arena-judge', phase: 'done' }, NOW + 2);
+  assert.equal(done.phase, 'P3');
+  assert.equal(sub(done, 'poteto').allow, true);
+  const moved = apply(done, { t: 'subagent', name: 'poteto', phase: 'start' }, NOW + 3);
+  assert.equal(moved.phase, 'P4');
+  assert.deepEqual(moved.req, {});
+});
+
 test('T18 out-of-order notifications leave state identical', () => {
   const cases = [
-    ['buddha', 'P5', { t: 'subagent', name: 'arena', phase: 'done' }],
+    ['buddha', 'P5', { t: 'subagent', name: 'poteto', phase: 'done' }],
     ['buddha', 'P3', { t: 'subagent', name: 'builder', phase: 'done' }],
     ['buddha', 'P4', { t: 'subagent', name: 'poteto', phase: 'start' }],
-    ['bazer', 'B4', { t: 'subagent', name: 'arena', phase: 'done' }],
+    ['bazer', 'B4', { t: 'subagent', name: 'poteto', phase: 'done' }],
   ];
   for (const [flow, phase, ev] of cases) {
     assert.deepEqual(apply(st(flow, phase), ev, NOW + 1), st(flow, phase), flow + ' ' + phase);
@@ -276,19 +289,20 @@ test('T23 feedback x4 never leaves a gate; submit_plan stays allowed; approved a
       assert.equal(plan(s), true, flow + ' ' + phase + ' round ' + i);
     }
     assert.equal(s.feedback[phase], 4);
-    assert.equal(badge(s).slice(0, 7), 'GATE r5');
+    assert.match(badge(s), / r5$/);
     assert.equal(apply(s, { t: 'plan', outcome: 'approved' }, NOW + 9).phase, next);
   }
 });
 
-test('T22 P3 admits its extra subagents; P2 and P4 deny them', () => {
-  const extra = spec.flows.buddha.phases.P3.also;
+test('T22 P3 admits its extra subagents; poteto needs the requires met', () => {
+  const extra = spec.flows.buddha.phases.P3.also.filter((n) => n !== 'poteto');
   assert.ok(Array.isArray(extra) && extra.length > 0, 'P3.also present');
   for (const name of extra) {
     assert.equal(sub(st('buddha', 'P3'), name).allow, true, name + ' @P3');
     assert.equal(sub(st('buddha', 'P2'), name).allow, false, name + ' @P2');
     assert.equal(sub(st('buddha', 'P4'), name).allow, false, name + ' @P4');
   }
+  assert.equal(sub(st('buddha', 'P3'), 'poteto').allow, false);
 });
 
 function flowOfSpec(phase) {

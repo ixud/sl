@@ -94,13 +94,23 @@ export function bootEntry({ build, hooks, spec, dir, ctx }) {
 
 const ENUM_KEYS = new Set(['type', 'delivery']);
 /** shape with string lengths; enum-ish keys keep their value */
-export function shapeDeep(value, depth = 4, key = '') {
+export function shapeDeep(value, depth = 4, key = '', plain = false) {
   if (value == null) return String(value);
-  if (typeof value === 'string') return ENUM_KEYS.has(key) ? value.slice(0, 24) : 's' + value.length;
+  if (typeof value === 'string') return !plain && ENUM_KEYS.has(key) ? value.slice(0, 24) : 's' + value.length;
   if (typeof value !== 'object') return typeof value;
-  if (Array.isArray(value)) return '[' + (value.length ? shapeDeep(value[0], depth - 1, key) : '') + ']';
+  if (Array.isArray(value)) return '[' + (value.length ? shapeDeep(value[0], depth - 1, key, plain) : '') + ']';
   if (depth < 0) return '{}';
-  return '{' + Object.keys(value).slice(0, 12).map((k) => k + ':' + shapeDeep(value[k], depth - 1, k)).join(',') + '}';
+  return '{' + Object.keys(value).slice(0, 12).map((k) => k + ':' + shapeDeep(value[k], depth - 1, k, plain)).join(',') + '}';
+}
+
+/** any key named like the given names, depth-limited */
+export function hasKey(value, names, depth = 4) {
+  if (!value || typeof value !== 'object' || depth < 0) return false;
+  for (const key of Object.keys(value)) {
+    if (names.has(key)) return true;
+    if (hasKey(value[key], names, depth - 1)) return true;
+  }
+  return false;
 }
 
 

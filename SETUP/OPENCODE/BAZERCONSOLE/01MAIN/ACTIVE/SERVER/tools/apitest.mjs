@@ -13,7 +13,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(__dirname, '..', 'index.mjs');
 const PORT = 4477;
 const HOME = path.join(os.tmpdir(), 'bazer', 'api test home');
-const TOKEN_FILE = path.join(__dirname, '..', '..', 'var', `token-${PORT}`);
+const STORE_DIR = path.join(HOME, '.bazerconsole', 'var');
+const TOKEN_FILE = path.join(STORE_DIR, `token-${PORT}`);
 
 let pass = 0;
 const fails = [];
@@ -95,7 +96,7 @@ try {
   const early = await post({ id: 'settings-save', params: { confirmed: true, patches: [{ id: 'pstack.judgment', value: 'a/b' }] } });
   check('บันทึก role ก่อนติดตั้ง → ล้มอย่างสุภาพ (ไม่ throw)', early.json?.ok === false && /template|ไฟล์/.test(JSON.stringify(early.json?.settings || {})), JSON.stringify(early.json?.settings || {}).slice(0, 160));
 
-  const VAR = path.join(__dirname, '..', '..', 'var');
+  const VAR = STORE_DIR;
   const stateFile = path.join(VAR, 'state.json');
   const keep = fs.existsSync(stateFile) ? fs.readFileSync(stateFile) : null;
   fs.mkdirSync(VAR, { recursive: true });
@@ -125,8 +126,8 @@ try {
   const { ROOT } = await import('../env.mjs');
   const { writeEntry } = await import('../apply.mjs');
   const { stamp } = await import('../apply.mjs');
-  const binSrcRel = 'BAZERCONSOLE/01MAIN/ACTIVE/var/bintest';
-  const binSrc = path.join(ROOT, binSrcRel);
+  const binSrc = path.join(HOME, 'bintest');
+  const binSrcRel = path.relative(ROOT, binSrc);
   fs.rmSync(binSrc, { recursive: true, force: true });
   fs.mkdirSync(path.join(binSrc, 'bin'), { recursive: true });
   const binFile = path.join(binSrc, 'bin', 'x.bin');
@@ -265,12 +266,13 @@ try {
     bOnText.match(/"plan"[\s\S]{0,60}/)?.[0] || '');
 
   // --- [ULTRA LOOP 3] lock → drift → lock-restore ต้องทำงานครบวง ---
-  const { writeState: writeStateT, readState: readStateT } = await import('../apply.mjs');
-  const stClean = readStateT();
+  const { writeState: writeStateT, readState: readStateT, makeStore } = await import('../apply.mjs');
+  const TSTORE = makeStore(STORE_DIR);
+  const stClean = readStateT(TSTORE);
   delete stClean.modelsSnapshot;
   delete stClean.snapshotHome;
   stClean.locks = { ...(stClean.locks || {}), models: true };
-  writeStateT(stClean);
+  writeStateT(stClean, TSTORE);
   await post({ id: 'settings-save', params: { confirmed: true, patches: [
     { id: 'model.buddha', value: 'p/one' }, { id: 'model.bazer', value: 'p/two' },
     { id: 'model.snack', value: 'p/three' }, { id: 'model.advisor', value: 'p/four' },
@@ -286,10 +288,10 @@ try {
   check('lock-restore: คืนโมเดลจาก snapshot จริง',
     restore.json?.ok === true && /"model": "p\/one"/.test(restoredText) && !/p\/CHANGED/.test(restoredText),
     restore.json?.summary);
-  const stHijack = readStateT();
-  writeStateT({ ...stHijack, snapshotHome: path.join(os.tmpdir(), 'bazer', 'other-home') });
+  const stHijack = readStateT(TSTORE);
+  writeStateT({ ...stHijack, snapshotHome: path.join(os.tmpdir(), 'bazer', 'other-home') }, TSTORE);
   const hijack = await post({ id: 'lock-restore', params: { confirmed: true } });
-  check('lock-restore: snapshot ของ home อื่น → ปฏิเสธ', hijack.json?.ok === false && /home อื่น/.test(hijack.json?.summary || ''), hijack.json?.summary);
+  check('lock-restore: snapshot ของ home ทดสอบ → ปฏิเสธ', hijack.json?.ok === false && /snapshot มาจากโฟลเดอร์ทดสอบ/.test(hijack.json?.summary || ''), hijack.json?.summary);
 
   // per-mode: snapshot แยกโหมด + คืนเฉพาะโหมด
   const snapB = await post({ id: 'lock-snapshot', params: { mode: 'buddha' } });
@@ -321,7 +323,7 @@ try {
   const token2 = await new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('เซิร์ฟเวอร์ตัวที่ 2 ไม่ขึ้น')), 15000);
     srv2.stdout.on('data', (b) => {
-      if (b.toString().includes('http://127.0.0.1')) { clearTimeout(t); resolve(fs.readFileSync(path.join(__dirname, '..', '..', 'var', `token-${PORT + 1}`), 'utf8').trim()); }
+      if (b.toString().includes('http://127.0.0.1')) { clearTimeout(t); resolve(fs.readFileSync(path.join(home2, '.bazerconsole', 'var', `token-${PORT + 1}`), 'utf8').trim()); }
     });
   });
   const H2 = { 'content-type': 'application/json', 'x-bazer-token': token2 };
@@ -352,7 +354,7 @@ try {
   const pl = await post({ id: 'apply', params: { confirmed: true, ids: ['plugin.bazer-flow'] } });
   const plugDir = path.join(HOME, '.config', 'opencode', 'plugins', 'bazer-flow');
   const plugFiles = fs.existsSync(plugDir) ? fs.readdirSync(plugDir) : [];
-  check('ติดตั้งปลั๊กอินลงเครื่อง (copy-tree)', pl.json?.ok === true && plugFiles.includes('index.ts') && plugFiles.includes('logic.mjs'), plugFiles.join(','));
+  check('ติดตั้งปลั๊กอินลงเครื่อง (copy-tree, ไม่มีไฟล์ dev)', pl.json?.ok === true && plugFiles.includes('index.ts') && !plugFiles.includes('logic.mjs') && !plugFiles.includes('guard.test.mjs'), plugFiles.join(','));
   const orphan = path.join(plugDir, 'old-junk.mjs');
   fs.writeFileSync(orphan, '// ของเก่า', 'utf8');
   const pl2 = await post({ id: 'apply', params: { confirmed: true, ids: ['plugin.bazer-flow'] } });

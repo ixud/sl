@@ -6,12 +6,14 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { ROOT, UI_DIR, VAR_DIR, ensureVarDir, makeResolver, MANIFEST_DIR, CONSOLE_DIR } from './env.mjs';
+import net from 'node:net';
+import { fileURLToPath } from 'node:url';
+import { ROOT, UI_DIR, makeResolver, MANIFEST_DIR, CONSOLE_DIR } from './env.mjs';
 import { manifest, settings, actions, policies, probes, validate } from './manifest.mjs';
 import { computePlan, diffFor } from './plan.mjs';
 import { checkLaw } from './law.mjs';
 import { runAction, actionIds } from './actions.mjs';
-import { readHistory, readState, allControls } from './apply.mjs';
+import { readHistory, readState, allControls, storeFor, trustedSnapshot } from './apply.mjs';
 import { cleanupPlan } from './apply.mjs';
 import { getAtPath } from './jsonc.mjs';
 import { listModels } from './models.mjs';
@@ -25,13 +27,18 @@ const arg = (name, def) => {
 const PORT = Number(arg('port', 4310));
 const HOME = arg('home', '');
 const NO_OPEN = process.argv.includes('--no-open');
+const STORE = storeFor(HOME || process.env.BAZER_HOME || undefined);
 
-ensureVarDir();
-// token ต่อการเปิดหนึ่งครั้ง + แยกตาม port — หลาย instance (console/apitest) ไม่ทับกัน
-const tokenFile = path.join(VAR_DIR, `token-${PORT}`);
-fs.writeFileSync(tokenFile, crypto.randomBytes(24).toString('hex'), 'utf8');
-const TOKEN = fs.readFileSync(tokenFile, 'utf8').trim();
-try { fs.rmSync(path.join(VAR_DIR, 'token'), { force: true }); } catch { /* ไม่มีไฟล์รุ่นเก่า */ }
+const TOKEN = crypto.randomBytes(24).toString('hex');
+const TOKEN_RE = /^token-(\d+)$/;
+export const tokenName = (port) => `token-${port}`;
+export const staleTokenNames = (files, actual, live) => files.filter((f) => { const m = TOKEN_RE.exec(f); return !!m && +m[1] !== actual && !live(+m[1]); });
+function sweepTokens(dir, actual) {
+  const files = fs.readdirSync(dir);
+  const ports = [...new Set(files.map((f) => +(TOKEN_RE.exec(f)?.[1] || 0)).filter((p) => p && p !== actual))];
+  const live = new Set(), probe = (p) => new Promise((res) => { const s = net.connect({ port: p, host: '127.0.0.1' }); const end = (ok) => { if (ok) live.add(p); s.destroy(); res(); }; s.setTimeout(250, () => end(false)); s.once('connect', () => end(true)); s.once('error', () => end(false)); });
+  Promise.all(ports.map(probe)).then(() => { for (const f of staleTokenNames(files, actual, (p) => live.has(p))) { try { fs.rmSync(path.join(dir, f), { force: true }); } catch { /* ไม่เป็นไร */ } } });
+}
 
 /* ---------- log bus (SSE) ---------- */
 const clients = new Set();
@@ -50,10 +57,10 @@ function getPlan(home) {
   return data;
 }
 
-function controlValue(c, home) {
+function controlValue(c, home, store) {
   const { resolve } = makeResolver(home);
   if (c.strategy === 'internal') {
-    const st = readState();
+    const st = readState(store);
     return !!(st.locks || {})[c.path];
   }
   const file = resolve(c.target);
@@ -70,13 +77,14 @@ function controlValue(c, home) {
 }
 
 function modelDrift(home, state) {
-  if (!state.locks?.models || !state.modelsSnapshot) return [];
+  const snap = trustedSnapshot(state, home);
+  if (!state.locks?.models || !snap) return [];
   const { resolve } = makeResolver(home);
   const file = resolve('${CONFIG}/opencode.jsonc');
   if (!fs.existsSync(file)) return [];
   const text = fs.readFileSync(file, 'utf8');
   const out = [];
-  for (const [mode, snap] of Object.entries(state.modelsSnapshot)) {
+  for (const [mode, snap] of Object.entries(snap)) {
     const cur = {
       model: getAtPath(text, ['agent', mode, 'model']) ?? null,
       variant: getAtPath(text, ['agent', mode, 'variant']) ?? null,
@@ -86,10 +94,10 @@ function modelDrift(home, state) {
   return out;
 }
 
-function settingsValues(home) {
+function settingsValues(home, store) {
   const out = {};
   for (const c of allControls()) {
-    out[c.id] = controlValue(c, home);
+    out[c.id] = controlValue(c, home, store);
   }
   return out;
 }
@@ -105,12 +113,12 @@ function rawSettings(home) {
   return out;
 }
 
-function buildState(home, { withProbes = false } = {}) {
+function buildState(home, { withProbes = false } = {}, store) {
   const { vars } = makeResolver(home);
   const plan = getPlan(home);
-  const state = readState();
+  const state = readState(store);
   let probeResult = null;
-  if (withProbes) probeResult = runAction('probe', { home }, {}).probes;
+  if (withProbes) probeResult = runAction('probe', { home, store }, {}).probes;
 
   return {
     app: {
@@ -136,10 +144,10 @@ function buildState(home, { withProbes = false } = {}) {
       }),
     ),
     settings,
-    settingsValues: settingsValues(home),
+    settingsValues: settingsValues(home, store),
     rawSettings: rawSettings(home),
     actions: actions.actions,
-    history: readHistory(40),
+    history: readHistory(40, store),
     cleanup: cleanupPlan(home),
     locks: state.locks || {},
     drift: modelDrift(home, state),
@@ -165,7 +173,7 @@ const server = http.createServer((req, res) => {
       catch (e) { return send(res, 500, JSON.stringify({ ok: false, error: e.message, models: [], providers: [] })); }
     }
     if (url.pathname === '/api/state') {
-      try { return send(res, 200, JSON.stringify(buildState(home, { withProbes: url.searchParams.get('probes') === '1' }))); }
+      try { return send(res, 200, JSON.stringify(buildState(home, { withProbes: url.searchParams.get('probes') === '1' }, STORE))); }
       catch (e) { return send(res, 500, JSON.stringify({ error: e.message })); }
     }
     if (url.pathname === '/api/diff') {
@@ -212,7 +220,7 @@ const server = http.createServer((req, res) => {
       if (url.pathname === '/api/action') {
         emit(`เริ่ม: ${body.id}`, 'start');
         try {
-          const result = runAction(body.id, { home }, body.params || {});
+          const result = runAction(body.id, { home, store: STORE }, body.params || {});
           const kind = result.level === 'warn' ? 'warn' : result.ok ? 'ok' : 'err';
           const label = kind === 'ok' ? 'เสร็จ' : kind === 'warn' ? 'เตือน' : 'ไม่สำเร็จ';
           emit(`${label}: ${body.id} — ${result.summary}`, kind);
@@ -243,6 +251,9 @@ function listen(port, tries = 0) {
 // ผูก 'listening' ครั้งเดียว — ถ้าผูกใน listen() จะซ้ำทุกครั้งที่ EADDRINUSE และเปิด URL ของ instance อื่น
 server.once('listening', () => {
   const actual = server.address().port;   // พอร์ตที่ได้จริง ไม่ใช่พอร์ตที่ขอ
+  fs.mkdirSync(STORE.dir, { recursive: true });
+  fs.writeFileSync(path.join(STORE.dir, tokenName(actual)), TOKEN, 'utf8');
+  sweepTokens(STORE.dir, actual);
   const link = `http://127.0.0.1:${actual}/?t=${TOKEN}`;
   console.log(`BAZERCONSOLE ${APP_VERSION} · ${link}`);
   console.log(`home: ${HOME || '(ค่าเริ่มต้นของเครื่อง)'}`);
@@ -256,5 +267,6 @@ server.once('listening', () => {
   }
 });
 
-listen(PORT);
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (isMain) listen(PORT);
 

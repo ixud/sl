@@ -77,6 +77,23 @@ test('pruneState on a missing directory never throws', () => {
   assert.doesNotThrow(() => pruneState(path.join(os.tmpdir(), 'bazer-nope-' + Date.now()), 1000, Date.now()));
 });
 
+test('U96 ringLog keeps 1500 lines and the 1500-line rewrite stays fast', () => {
+  const dir = tmp();
+  const file = path.join(dir, 'log.tsv');
+  const log = ringLog(file, 1500);
+  fs.writeFileSync(file, Array.from({ length: 1499 }, (_, i) => JSON.stringify({ n: i })).join('\n') + '\n', 'utf8');
+  const t0 = Date.now();
+  log({ n: 1499 });
+  const ms = Date.now() - t0;
+  console.log('ringLog 1500-line rewrite ms: ' + ms);
+  assert.ok(ms < 1000, 'rewrite took ' + ms + ' ms');
+  log({ n: 1500 });
+  const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+  assert.equal(lines.length, 1500);
+  assert.equal(JSON.parse(lines[0]).n, 1);
+  assert.equal(JSON.parse(lines[lines.length - 1]).n, 1500);
+});
+
 test('loadSpecFile works from a copied dir whose path has spaces and Thai chars', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bazer plugin ไทย test '));
   const dir = path.join(root, 'bazer flow ไทย');

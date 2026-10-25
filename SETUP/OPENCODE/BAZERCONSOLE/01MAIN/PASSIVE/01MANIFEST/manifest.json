@@ -164,17 +164,6 @@
       "auto": true
     },
     {
-      "id": "sub.arena",
-      "kind": "subagent",
-      "title": "ARENA (6 เฟส)",
-      "source": "AGENT/02SUBAGENT/ARENA.md",
-      "target": "${CONFIG}/agents/arena.md",
-      "strategy": "overwrite",
-      "owner": "ours",
-      "status": "ready",
-      "auto": true
-    },
-    {
       "id": "sub.builder",
       "kind": "subagent",
       "title": "BUILDER (มือของ Plan Mode เดิม)",
@@ -189,7 +178,7 @@
       "id": "subsub.arena-runner",
       "kind": "subsubagent",
       "title": "ARENA runner (ผู้แข่งขัน 1 ที่นั่ง)",
-      "source": "AGENT/02SUBAGENT/SUBSUBAGENT/ARENA-RUNNER.md",
+      "source": "AGENT/02SUBAGENT/ARENA-RUNNER.md",
       "target": "${CONFIG}/agents/arena-runner.md",
       "strategy": "overwrite",
       "ladderPolicy": "buddha-ladder",
@@ -202,7 +191,7 @@
       "id": "subsub.arena-judge",
       "kind": "subsubagent",
       "title": "ARENA judge (กรรมการให้คะแนน)",
-      "source": "AGENT/02SUBAGENT/SUBSUBAGENT/ARENA-JUDGE.md",
+      "source": "AGENT/02SUBAGENT/ARENA-JUDGE.md",
       "target": "${CONFIG}/agents/arena-judge.md",
       "strategy": "overwrite",
       "ladderPolicy": "buddha-ladder",

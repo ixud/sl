@@ -1,6 +1,6 @@
 /* bazer-flow engine — explicit phase state, spec-driven.
    Pure: no IO, no OpenCode imports, time is injected. No ids or agent names live here. */
-const VERSION = 1;
+const VERSION = 2;
 let active = null;
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -29,6 +29,8 @@ export function loadSpec(obj) {
       if (typeof p.gate !== 'boolean' || typeof p.writeProject !== 'boolean') bad('phase ' + pid + ' flags');
       if (p.expect != null && typeof p.expect !== 'string') bad('phase ' + pid + ' expect');
       if (p.also != null && (!Array.isArray(p.also) || p.also.some((a) => typeof a !== 'string'))) bad('phase ' + pid + ' also');
+      const rq = Array.isArray(p.requires) ? p.requires : [];
+      for (const r of rq) if (!r || typeof r.agent !== 'string' || !r.agent || (r.state !== 'started' && r.state !== 'done') || !isNum(r.min) || r.min < 1) bad('phase ' + pid + ' requires');
       const tr = {};
       for (const [k, v] of Object.entries(p.transitions || {})) {
         if (v !== 'stay' && !f.phases[v]) bad('phase ' + pid + ' transition ' + k + ' -> ' + v);
@@ -38,6 +40,7 @@ export function loadSpec(obj) {
         name: p.name,
         expect: p.expect == null ? null : p.expect,
         also: Array.isArray(p.also) ? [...p.also] : [],
+        requires: rq.map((r) => ({ agent: r.agent, state: r.state, min: Math.floor(r.min) })),
         gate: p.gate,
         writeProject: p.writeProject,
         terminal: p.terminal === true,
@@ -84,6 +87,7 @@ function fresh(flowId, now) {
     feedback: {},
     pending: 0,
     planErrors: 0,
+    req: {},
     errors: 0,
     approvals: {},
     skipped: [],
@@ -102,6 +106,15 @@ function deny(s, p, why) {
   return { allow: false, hint: hint.slice(0, 200) };
 }
 
+function missing(s, p) {
+  return (p.requires || []).filter((r) => ((((s.req || {})[r.agent] || {})[r.state]) || 0) < r.min);
+}
+
+export function reqHint(s, p) {
+  const items = missing(s, p).map((r) => r.agent + ' ' + r.state + ' (min ' + r.min + ')').join(', ');
+  return ('STOP. ' + s.phase + ' ' + p.name + ' requires ' + items + '; next: ' + nextStep(p) + ', or user types >>skip.').slice(0, 160);
+}
+
 export function check(state, req) {
   const p = phaseOf(state);
   if (!p) return { allow: false, hint: 'unknown phase — restart the flow' };
@@ -109,8 +122,11 @@ export function check(state, req) {
   if (t === 'read') return ok();
   if (t === 'subagent') {
     const name = String((req && req.name) || '');
-    if (name === p.expect || active.defaults.helpers.includes(name) || p.also.includes(name)) return ok();
-    return deny(state, p, 'subagent ' + (name || '(none)') + ' not allowed');
+    const allowed = name === p.expect || active.defaults.helpers.includes(name) || p.also.includes(name);
+    const leaving = (name + '.start') in p.transitions && missing(state, p).length > 0;
+    if (allowed && !leaving) return ok();
+    if (!allowed) return deny(state, p, 'subagent ' + (name || '(none)') + ' not allowed');
+    return { allow: false, hint: reqHint(state, p), detail: 'requires' };
   }
   if (t === 'submit_plan') return p.gate ? ok() : deny(state, p, 'plan review is closed');
   if (t === 'write') {
@@ -121,7 +137,7 @@ export function check(state, req) {
 }
 
 function move(s, target, now) {
-  if (target && target !== 'stay') s.phase = target;
+  if (target && target !== 'stay') { s.phase = target; s.req = {}; }
   s.lastEventAt = now;
   return s;
 }
@@ -132,6 +148,8 @@ function reset(s, f, now) {
   s.lastEventAt = now;
   s.feedback = {};
   s.pending = 0;
+  s.planErrors = 0;
+  s.req = {};
   s.errors = 0;
   s.approvals = {};
   s.skipped = [];
@@ -179,8 +197,18 @@ export function apply(state, ev, now) {
   }
 
   if (ev.t === 'subagent') {
-    const key = String(ev.name == null ? '' : ev.name) + '.' + String(ev.phase == null ? '' : ev.phase);
+    const name = String(ev.name == null ? '' : ev.name);
+    const kind = String(ev.phase == null ? '' : ev.phase);
+    const key = name + '.' + kind;
+    if ((p.requires || []).some((r) => r.agent === name)) {
+      const c = s.req[name] || (s.req[name] = { started: 0, done: 0 });
+      if (kind === 'start') c.started = (c.started || 0) + 1;
+      else if (kind === 'done') c.done = (c.done || 0) + 1;
+      else if (kind === 'error') c.started = Math.max(0, (c.started || 0) - 1);
+      s.lastEventAt = now;
+    }
     if (!(key in p.transitions)) return s;
+    if (kind !== 'error' && missing(s, p).length) return s;
     if (key.endsWith('.error')) s.errors += 1;
     return move(s, p.transitions[key], now);
   }
@@ -191,12 +219,12 @@ export function apply(state, ev, now) {
 export function remind(state, now) {
   const p = phaseOf(state);
   if (!p) return '[unknown phase] restart the flow'.slice(0, 160);
-  const d = active.defaults;
+  if ((p.requires || []).length && missing(state, p).length) return reqHint(state, p);  const d = active.defaults;
   const total = Object.values(state.feedback || {}).reduce((a, b) => a + (Number(b) || 0), 0);
   let out = '[' + String(state.flow).toUpperCase() + ' ' + state.phase + ' ' + p.name + '] next: ' + nextStep(p) + ' · project writes: ' + (p.writeProject ? 'open' : 'closed');
   let hint = '';
   if (total >= d.feedbackHintAt) hint = 'ask the human: feedback keeps coming back';
-  else if (state.planErrors >= 1) hint = 'plan review tool failed; check Plannotator, or >>approve';
+  else if (state.planErrors >= 1) hint = 'plan review tool failed; check the gate tool, or >>approve';
   else if (p.gate && state.pending >= 1) hint = '>>approve if you reviewed the plan yourself';
   else if (state.errors >= d.errHintAt) hint = 'ask the human: subagent keeps failing';
   else if (isNum(now) && isNum(state.lastEventAt) && now - state.lastEventAt > d.stallMs) hint = 'stalled: use >>skip or >>abort';
@@ -208,7 +236,7 @@ export function badge(state) {
   if (!p) return '?';
   if (p.gate) {
     const total = Object.values(state.feedback || {}).reduce((a, b) => a + (Number(b) || 0), 0);
-    return ('GATE r' + (total + 1)).slice(0, 12);
+    return (state.phase + ' ' + p.name + ' r' + (total + 1)).slice(0, 12);
   }
   return (state.phase + ' ' + p.name).slice(0, 12);
 }
@@ -216,12 +244,14 @@ export function badge(state) {
 export function serialize(state) {
   const s = clone(state);
   s.v = VERSION;
+  const p = phaseOf(s);
+  s.expect = p ? p.expect : null;
   return s;
 }
 
 export function deserialize(obj, now) {
   if (!active) throw new Error('no spec loaded');
-  const known = obj && typeof obj === 'object' && obj.v === VERSION && active.flows[obj.flow];
+  const known = obj && typeof obj === 'object' && active.flows[obj.flow];
   const phaseOk = known && active.flows[obj.flow].phases[obj.phase];
   const freshOk = phaseOk && isNum(obj.at) && isNum(now) && now - obj.at <= active.defaults.ttlMs;
   if (!freshOk) return fresh(firstFlow(), now);
@@ -235,6 +265,14 @@ export function deserialize(obj, now) {
   }
   if (isNum(obj.pending) && obj.pending > 0) s.pending = obj.pending;
   if (isNum(obj.planErrors) && obj.planErrors > 0) s.planErrors = obj.planErrors;
+  if (obj.req && typeof obj.req === 'object') {
+    for (const [name, v] of Object.entries(obj.req)) {
+      if (!v || typeof v !== 'object') continue;
+      const kept = {};
+      for (const k of ['started', 'done']) if (isNum(v[k]) && v[k] > 0) kept[k] = Math.floor(v[k]);
+      if (Object.keys(kept).length) s.req[name] = kept;
+    }
+  }
   if (isNum(obj.errors) && obj.errors > 0) s.errors = obj.errors;
   if (obj.approvals && typeof obj.approvals === 'object') {
     for (const [k, v] of Object.entries(obj.approvals)) {

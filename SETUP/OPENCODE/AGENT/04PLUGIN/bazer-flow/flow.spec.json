@@ -1,5 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
+  "gateTools": ["submit_plan"],
+  "tempOnly": ["arena-runner", "arena-judge"],
   "defaults": { "stallMs": 1200000, "ttlMs": 43200000, "feedbackHintAt": 3, "errHintAt": 2, "helpers": ["explore"] },
   "flows": {
     "buddha": {
@@ -8,7 +10,7 @@
         "P0": { "name": "SURVEY", "expect": "poteto", "gate": false, "writeProject": false, "transitions": { "poteto.start": "P1" } },
         "P1": { "name": "PLAN1", "expect": "poteto", "gate": false, "writeProject": false, "transitions": { "poteto.done": "P2" } },
         "P2": { "name": "GATE1", "expect": "plannotator", "also": ["poteto"], "gate": true, "writeProject": false, "transitions": { "approved": "P3", "feedback": "stay" } },
-        "P3": { "name": "ARENA", "expect": "arena", "also": ["arena-runner", "arena-judge", "arena-loop1"], "gate": false, "writeProject": false, "skippable": true, "transitions": { "arena.done": "P4", "skip": "P4" } },
+        "P3": { "name": "ARENA", "expect": "buddha", "also": ["arena-runner", "arena-judge", "poteto"], "requires": [{ "agent": "arena-runner", "state": "started", "min": 1 }, { "agent": "arena-judge", "state": "done", "min": 1 }], "gate": false, "writeProject": false, "skippable": true, "transitions": { "poteto.start": "P4", "skip": "P4" } },
         "P4": { "name": "PLAN2", "expect": "poteto", "gate": false, "writeProject": false, "transitions": { "poteto.done": "P5" } },
         "P5": { "name": "GATE2", "expect": "plannotator", "also": ["poteto"], "gate": true, "writeProject": false, "transitions": { "approved": "P6", "feedback": "stay" } },
         "P6": { "name": "BUILD", "expect": "builder", "gate": false, "writeProject": true, "transitions": { "builder.done": "P7", "builder.error": "stay" } },

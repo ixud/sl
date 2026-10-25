@@ -361,7 +361,7 @@ t('settings control ทุกตัว resolve target ได้', () => {
 
 t('ไฟล์ agent ทุกตัวผ่านสคีมา (mode/color/permission)', () => {
   const problems = [];
-  const dirs = ['AGENT/01PRIMARY', 'AGENT/02SUBAGENT', 'AGENT/02SUBAGENT/SUBSUBAGENT'];
+  const dirs = ['AGENT/01PRIMARY', 'AGENT/02SUBAGENT'];
   for (const d of dirs) {
     for (const name of fs.readdirSync(path.join(ROOT, d))) {
       if (!name.endsWith('.md') || name === 'GUIDELINE.md') continue;
@@ -551,10 +551,10 @@ t('อ่าน permission จาก frontmatter ของไฟล์ agent ไ
 });
 
 t('ไฟล์ role ของ Arena ตรงกับที่บันไดบังคับ', () => {
-  const runner = parseFrontmatter(fs.readFileSync(path.join(ROOT, 'AGENT/02SUBAGENT/SUBSUBAGENT/ARENA-RUNNER.md'), 'utf8'));
+  const runner = parseFrontmatter(fs.readFileSync(path.join(ROOT, 'AGENT/02SUBAGENT/ARENA-RUNNER.md'), 'utf8'));
   assert.equal(runner.permission.subagent, 'deny', 'runner ต้องห้ามเรียก subagent');
   assert.equal(runner.permission.shell, undefined, 'runner ต้องไม่ปัก shell ในไฟล์ — ไม่งั้นทับค่าบันได (เช่น ask ทับ allow)');
-  const judge = parseFrontmatter(fs.readFileSync(path.join(ROOT, 'AGENT/02SUBAGENT/SUBSUBAGENT/ARENA-JUDGE.md'), 'utf8'));
+  const judge = parseFrontmatter(fs.readFileSync(path.join(ROOT, 'AGENT/02SUBAGENT/ARENA-JUDGE.md'), 'utf8'));
   assert.equal(judge.permission.edit, 'deny', 'judge ต้องอ่านอย่างเดียว');
   assert.equal(judge.permission.shell, 'deny', 'judge ต้องอ่านอย่างเดียว');
   assert.equal(judge.permission.subagent, 'deny', 'judge ต้องห้ามเรียก subagent');
@@ -765,44 +765,6 @@ t('stateOf: agent ที่ผูกบันได ไม่ขึ้น stale 
   assert.equal(stateOf(entry, h).state, 'stale');
   fs.rmSync(h, { recursive: true, force: true });
 });
-
-// เทสต์ async ต้อง await ให้จริง (t() เป็น sync — ถ้าใส่ async จะปล่อย promise ลอยและไม่นับผล)
-await (async () => {
-  const name = 'gate logic: SNACK ไม่ถูกบล็อก · BUDDHA ต้อง 2 ใบ · feedback ไม่รีเซ็ต';
-  try {
-    const mod = await import('file://' + path.join(ROOT, 'AGENT/04PLUGIN/bazer-flow/logic.mjs').replace(/\\/g, '/'));
-    const T = ['C:/Users/x/AppData/Local/Temp/bazer'];
-    // SNACK เขียนไฟล์โปรเจกต์ได้ทันที (โหมดเร็ว ไม่มีแผน)
-    assert.equal(mod.decide({ agent: 'snack', tool: 'edit', args: { filePath: 'C:/proj/a.md' }, count: 0, tempRoots: T }).allow, true);
-    // BUDDHA: 1 ใบยังไม่พอ
-    assert.equal(mod.decide({ agent: 'buddha', tool: 'edit', args: { filePath: 'C:/proj/a.md' }, count: 1, tempRoots: T }).allow, false);
-    assert.equal(mod.decide({ agent: 'buddha', tool: 'edit', args: { filePath: 'C:/proj/a.md' }, count: 2, tempRoots: T }).allow, true);
-    // BAZER: 1 ใบพอ
-    assert.equal(mod.decide({ agent: 'bazer', tool: 'edit', args: { filePath: 'C:/proj/a.md' }, count: 1, tempRoots: T }).allow, true);
-    // ARENA: เขียนโปรเจกต์ไม่ได้ (แม้อนุมัติแล้ว) แต่ temp ได้
-    assert.equal(mod.decide({ agent: 'arena', tool: 'edit', args: { filePath: 'C:/proj/a.md' }, count: 0, tempRoots: T }).allow, false);
-    assert.equal(mod.decide({ agent: 'arena', tool: 'edit', args: { filePath: 'C:/proj/a.md' }, count: 5, tempRoots: T }).allow, false);
-    assert.equal(mod.decide({ agent: 'arena', tool: 'edit', args: { filePath: 'C:/Users/x/AppData/Local/Temp/bazer/c.md' }, count: 0, tempRoots: T }).allow, true);
-    // plan: ไม่มีข้อยกเว้น *.md แล้ว
-    assert.equal(mod.decide({ agent: 'plan', tool: 'edit', args: { filePath: 'C:/proj/README.md' }, count: 0, tempRoots: T }).allow, false);
-    // feedback ของ Plannotator ไม่นับเป็น user prompt ใหม่
-    assert.equal(mod.isHandoffText('# Plan Feedback\n\nI\'ve reviewed this plan and I have 1 piece of feedback'), true);
-    const msgs = [
-      { role: 'user', parts: [{ type: 'text', text: 'งาน' }] },
-      { role: 'assistant', parts: [{ type: 'tool', tool: 'submit_plan', state: { output: 'Plan approved with notes!' } }] },
-      { role: 'user', parts: [{ type: 'text', text: '# Plan Feedback\nok' }] },
-    ];
-    assert.equal(mod.approvalsFromMessages(msgs), 1, 'approval ต้องไม่หายเพราะข้อความ feedback');
-    assert.equal(mod.phaseFor('buddha', 1), 'ARENA');
-    assert.equal(mod.phaseFor('buddha', 2), 'BUILD');
-    assert.equal(mod.phaseFor('snack', 0), '');
-    pass++;
-    console.log(`  ok  ${name}`);
-  } catch (e) {
-    console.error(`FAIL  ${name}\n      ${e.message}`);
-    process.exitCode = 1;
-  }
-})();
 
 t('law R1 ผ่าน แม้มีโค้ดใน AGENT/04PLUGIN (exception ตาม GUIDELINE)', () => {
   const law = checkLaw({ handlerIds: actionIds });

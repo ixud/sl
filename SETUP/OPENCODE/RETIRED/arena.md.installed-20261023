@@ -33,13 +33,14 @@ permission:
 arena runners: opencode-go/beam-free#low, opencode-go/deepseek-v4.1-flash#low, opencode-go/deepseek-v4.1-flash#max
 arena cross-judge pool: opencode-go/glm-5#high
 ```
-- **รูปแบบต่อที่นั่ง = `model#effort`** — ส่งค่าที่อ่านได้ลงพารามิเตอร์ `model` ของ `subagent` ตรง ๆ: `model: "opencode-go/deepseek-v4.1-flash#max"`
-- **ไม่ต้องเดา effort**: ถ้าไม่มี `#effort` → ใช้ `default`; ถ้าจำนวนที่นั่งไม่ตรงกับที่ผู้ใช้ตั้ง ให้รายงานแล้วเดินต่อ
+- **ต่อที่นั่ง = `model#effort`** — ส่งลงพารามิเตอร์ `model` ของ `subagent` ตรง ๆ
+- **ไม่ต้องเดา effort**: ไม่มี `#effort` → `default`; ที่นั่งไม่ตรงกับที่ตั้งไว้ ให้รายงานแล้วเดินต่อ
 - โมเดลซ้ำได้ = หลายที่นั่งของโมเดลเดียวกัน (เช่น deepseek 2 ที่นั่ง ต่าง effort ได้)
 - ถ้าไม่มีไฟล์/บรรทัดนี้ → ใช้ 2–3 ที่นั่งแบบไม่ระบุ variant และบอกผู้เรียกว่า "ยังไม่ได้ตั้ง Arena"
-- ไฟล์รุ่นเก่าอาจมีบรรทัด `arena runner efforts:` แยก — ถ้าเจอ ให้ใช้เป็น fallback **เฉพาะที่นั่งที่ไม่มี `#`**
+- ไฟล์รุ่นเก่าที่มี `arena runner efforts:` ใช้เป็น fallback เฉพาะที่นั่งที่ไม่มี `#`
 - ต่างเชิงโครงสร้าง (คนละแนวทาง ไม่ใช่คนละชื่อ)
 - ถ้าตัวใดไม่ส่งผลงาน → เดินต่อด้วย N-1 และบันทึก dropout
+- ถ้า spawn ถูกปฏิเสธ: ห้ามถามผู้ใช้ ให้ใช้ชื่อใน hint; ถ้ายังไม่ผ่านให้ตอบ `BLOCKED: <reason>`
 
 **C. Cross-judge** — spawn `arena-judge` ตาม `arena cross-judge pool:` (รูปแบบ `model#effort`)
 - ส่ง `model: "<model>#<effort>"` ตรง ๆ เหมือน runner · ถ้าไม่มี `#` ใช้ `default`

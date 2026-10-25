@@ -20,6 +20,24 @@ import { appendArrayItem, getAtPath, setAtPath, parseJsonc } from './jsonc.mjs';
 const ok = (summary, extra = {}) => ({ ok: true, summary, ...extra });
 const bad = (summary, extra = {}) => ({ ok: false, summary, ...extra });
 const warn = (summary, extra = {}) => ({ ok: true, warn: true, level: 'warn', summary, ...extra });
+const clipText = (s, n) => (String(s ?? '').length > n ? String(s).slice(0, n) : String(s ?? ''));
+export function blockerSummary(blockers) {
+  const list = Array.isArray(blockers) ? blockers : [];
+  if (!list.length) return 'มี blocker 0 รายการ';
+  const parts = list.slice(0, 3).map((b) => {
+    const s = String(b), at = s.indexOf(': ');
+    return `${at < 0 ? s : s.slice(0, at)} (${clipText(at < 0 ? '' : s.slice(at + 2), 30)})`;
+  });
+  const more = list.length - parts.length;
+  return clipText(`มี blocker ${list.length} รายการ: ${parts.join(', ')}${more ? ` +${more}` : ''}`, 160);
+}
+export function pendingSummary(entries) {
+  const list = (Array.isArray(entries) ? entries : []).filter((e) => e && ['missing', 'stale'].includes(e.state));
+  if (!list.length) return 'ต้องทำ 0 รายการ';
+  const parts = list.slice(0, 3).map((e) => String(e.title || e.id || ''));
+  const more = list.length - parts.length;
+  return clipText(`ต้องทำ ${list.length} รายการ: ${parts.join(', ')}${more ? ` +${more}` : ''}`, 160);
+}
 
 /* probe ที่ "ตก" ได้ตามปกติก่อนติดตั้ง — ใช้แยก "ยังไม่ติดตั้ง" ออกจาก "พังจริง" */
 const PREINSTALL_PROBES = new Set(['builtin-hidden', 'permission-level', 'permission-arena-runner', 'permission-arena-judge', 'modes-present']);
@@ -53,8 +71,8 @@ const HANDLERS = {
   'self-check': (ctx) => {
     const lawR = checkLaw({ handlerIds: Object.keys(HANDLERS) });
     const p = computePlan(ctx.home, { lawResult: lawR });
-    const pr = runProbes(ctx.home);
-    const proofs = verifyProofs(ctx.home, pr);
+    const pr = runProbes(ctx.home, ctx.store);
+    const proofs = verifyProofs(ctx.home, pr, ctx.store);
     const pending = p.summary.missing + p.summary.stale;
     const failIds = pr.results.filter((r) => !r.ok && r.severity === 'fail').map((r) => r.id);
     const onlyPre = failIds.length > 0 && failIds.every((id) => PREINSTALL_PROBES.has(id));
@@ -66,11 +84,11 @@ const HANDLERS = {
     if (lawR.ok && p.blockers.length === 0 && pending > 0 && onlyPre) {
       return warn(`ยังไม่ได้ติดตั้ง ${pending} รายการ (กฎผ่าน · probe รอติดตั้ง ${failIds.length} ข้อ)`, payload);
     }
-    return bad(`กฎ ${lawR.ok ? 'ผ่าน' : 'ไม่ผ่าน'} · ต้องทำ ${pending} รายการ · probe ตก ${pr.failed}`, payload);
+    return bad(clipText(`กฎ ${lawR.ok ? 'ผ่าน' : 'ไม่ผ่าน'} · ${pendingSummary(p.entries)} · probe ตก ${pr.failed}`, 160), payload);
   },
 
   'probe': (ctx) => {
-    const pr = runProbes(ctx.home);
+    const pr = runProbes(ctx.home, ctx.store);
     const plan = computePlan(ctx.home, {});
     const v = probeVerdict(pr, plan);
     const payload = { probes: pr, plan };
@@ -83,9 +101,9 @@ const HANDLERS = {
     const lawR = checkLaw({ handlerIds: Object.keys(HANDLERS) });
     if (!lawR.ok) return bad('กฎไม่ผ่าน — หยุดก่อนติดตั้ง', { law: lawR });
     const p = computePlan(ctx.home, { lawResult: lawR });
-    if (p.blockers.length) return bad(`มี blocker ${p.blockers.length} รายการ`, { plan: p });
-    const r = applyEntries(ctx.home, Array.isArray(params?.ids) ? params.ids : null);
-    const pr = runProbes(ctx.home);
+    if (p.blockers.length) return bad(blockerSummary(p.blockers), { plan: p });
+    const r = applyEntries(ctx.home, Array.isArray(params?.ids) ? params.ids : null, ctx.store);
+    const pr = runProbes(ctx.home, ctx.store);
     const summary = r.errors.length
       ? `ล้มเหลว ${r.errors.length} · เขียน ${r.applied.length}`
       : `เขียน ${r.applied.length} · ข้าม ${r.skipped.length} · probe ${pr.ok ? 'ผ่าน' : `ตก ${pr.failed}`}`;
@@ -95,7 +113,7 @@ const HANDLERS = {
   'policy-set': (ctx, params) => {
     if (!params?.level) return bad('ต้องระบุระดับ');
     const policyId = params?.policy === 'bazer-ladder' ? 'bazer-ladder' : 'buddha-ladder';
-    const r = setPolicy(ctx.home, policyId, params.level);
+    const r = setPolicy(ctx.home, policyId, params.level, ctx.store);
     const lv = policies[policyId].levels.find((l) => String(l.id) === String(params.level));
     const who = policyId === 'bazer-ladder' ? 'BAZER' : 'BUDDHA';
     return ok(`${who} = ${lv.id} ${lv.name} · เขียน ${r.targets} ที่ (config + agent file) · มีผลกับ session ใหม่`, { policy: r, level: lv, policyId });
@@ -103,64 +121,65 @@ const HANDLERS = {
 
   'policy-undo': (ctx, params) => {
     const policyId = params?.policy === 'bazer-ladder' ? 'bazer-ladder' : 'buddha-ladder';
-    const r = undoPolicy(ctx.home, policyId);
+    const r = undoPolicy(ctx.home, policyId, ctx.store);
     const who = policyId === 'bazer-ladder' ? 'BAZER' : 'BUDDHA';
     return ok(`${who} ย้อนเป็นระดับ ${r.level} ${r.name} · เขียน ${r.targets} ที่`, { policy: r, policyId });
   },
 
   'builtin-toggle': (ctx, params) => {
     const mode = params?.mode === 'on' ? 'on' : 'off';
-    const r = setBuiltin(ctx.home, mode);
+    const r = setBuiltin(ctx.home, mode, ctx.store);
     return ok(mode === 'off' ? 'ซ่อน Plan/Build แล้ว' : 'คืน Plan/Build แล้ว', { result: r });
   },
 
   'retire-old-flow': (ctx) => {
-    const r = retireOldFlow(ctx.home);
+    const r = retireOldFlow(ctx.home, undefined, ctx.store);
     return r.changed ? ok('ถอด bazer-flow เก่าออกจาก config แล้ว', { result: r }) : ok(r.note || 'ไม่มีอะไรต้องถอด', { result: r });
   },
 
   'settings-save': (ctx, params) => {
     const patches = Array.isArray(params?.patches) ? params.patches : [];
     if (!patches.length) return bad('ไม่มีค่าที่เปลี่ยน');
-    const r = saveSettings(ctx.home, patches);
+    const r = saveSettings(ctx.home, patches, ctx.store);
     return r.ok ? ok(`บันทึก ${r.results.filter((x) => x.changed).length} ช่อง`, { settings: r }) : bad('มีช่องที่บันทึกไม่ได้', { settings: r });
   },
 
   'settings-full': (ctx, params) => {
     if (!params?.file) return bad('ต้องระบุไฟล์ (tui / cli)');
-    const r = writeFullSettings(ctx.home, params.file, params.content);
+    const r = writeFullSettings(ctx.home, params.file, params.content, ctx.store);
     return ok(`เขียนทับ ${r.label} แล้ว (${r.bytes} bytes)`, { full: r });
   },
 
   'pstack-preset': (ctx, params) => {
     const mode = params?.mode === 'split' ? 'split' : 'uniform';
-    const r = pstackPreset(ctx.home, mode, params?.modelA, params?.modelB);
+    const r = pstackPreset(ctx.home, mode, params?.modelA, params?.modelB, ctx.store);
     return r.ok ? ok(`เติม ${r.results.length} role แล้ว`, { settings: r }) : bad('มี role ที่เขียนไม่ได้', { settings: r });
   },
 
-  'history-list': () => ok('อ่านประวัติแล้ว', { history: readHistory(200) }),
+  'history-list': (ctx) => ok('อ่านประวัติแล้ว', { history: readHistory(200, ctx.store) }),
 
   'rollback': (ctx, params) => {
     if (!params?.stamp) return bad('ต้องระบุ stamp');
-    const r = rollback(ctx.home, params.stamp);
+    const r = rollback(ctx.home, params.stamp, ctx.store);
+    if (r.pruned) return bad(r.summary, { rollback: r });
     return ok(`คืน ${r.restored} · ลบ ${r.deleted}`, { rollback: r });
   },
 
   'plannotator-locate': (ctx) => {
-    const pr = runProbes(ctx.home).results.find((x) => x.id === 'plannotator-locate');
+    const pr = runProbes(ctx.home, ctx.store).results.find((x) => x.id === 'plannotator-locate');
     return pr?.ok ? ok(pr.detail, { locate: pr.extra }) : warn(pr?.detail || 'ไม่พบไฟล์ Plannotator', { locate: pr?.extra });
   },
 
   'lock-snapshot': (ctx, params) => {
     const mode = String(params?.mode || '');
-    const done = snapshotModels(ctx.home, mode ? [mode] : undefined);
+    const done = snapshotModels(ctx.home, mode ? [mode] : undefined, ctx.store);
     if (!done.length) return warn('ยังไม่มีไฟล์ config ให้ถ่าย snapshot — ติดตั้งชุด MAJOR ก่อน');
     return ok(`ถ่าย snapshot ${done.length} โหมด: ${done.join(', ')}`, { modes: done });
   },
 
   'lock-restore': (ctx, params) => {
     const mode = params?.mode ? String(params.mode) : undefined;
-    const r = restoreLockedModels(ctx.home, mode);
+    const r = restoreLockedModels(ctx.home, mode, ctx.store);
     const label = mode ? `โหมด ${mode}` : 'ทุกโหมด';
     return r.changed.length
       ? ok(`คืนค่า ${label}: ${r.changed.length} ช่อง (${r.changed.join(', ')})`, { run: r })
@@ -175,21 +194,21 @@ const HANDLERS = {
 
   'cleanup-old': (ctx, params) => {
     const groups = Array.isArray(params?.groups) && params.groups.length ? params.groups : undefined;
-    const r = cleanupOld(ctx.home, { apply: !!params?.apply, groups });
+    const r = cleanupOld(ctx.home, { apply: !!params?.apply, groups }, ctx.store);
     if (!r.apply) return ok(`dry-run: จะย้าย ${r.count} รายการ`, { cleanup: r });
     return ok(`ย้าย ${r.moved.length} รายการไป ${r.quarantine}`, { cleanup: r });
   },
 
   'reset-template': (ctx, params) => {
     if (!params?.id) return bad('ต้องระบุ id ของ template (เช่น tpl.agents-md)');
-    const r = resetTemplate(ctx.home, params.id);
+    const r = resetTemplate(ctx.home, params.id, ctx.store);
     return ok(`${r.id}: เขียนใหม่จาก template แล้ว (${r.created ? 'สร้างใหม่' : 'ทับของเดิม'})`, { run: r });
   },
 
   'install-tools': (ctx, params) => {
     const steps = JSON.parse(fs.readFileSync(path.join(PASSIVE_DIR, '02INSTALLER', 'install.json'), 'utf8')).steps;
     // รัน probe ครั้งเดียวแล้วใช้ซ้ำ (ไม่ spawn opencode ต่อ step และตรวจ version จริงผ่าน probe)
-    const pr = runProbes(ctx.home);
+    const pr = runProbes(ctx.home, ctx.store);
     const missing = [];
     for (const s of steps) {
       const probeId = s.check?.probe || s.check?.kind;
@@ -317,14 +336,15 @@ const HANDLERS = {
   /* ---------- backup: ดูรายการ + คืนไฟล์เดียว ---------- */
 
   'backup-list': (ctx, params) => {
-    const rows = listBackups(undefined, Number(params?.limit) || 30);
+    const rows = listBackups(ctx.store, Number(params?.limit) || 30);
     const total = rows.reduce((a, r) => a + r.count, 0);
     return ok(rows.length ? `${rows.length} รอบ · ${total} ไฟล์` : 'ยังไม่มี backup', { backups: rows });
   },
 
   'backup-restore': (ctx, params) => {
     if (!params?.stamp || !params?.target) return bad('ต้องระบุ stamp และ target');
-    const r = restoreBackupFile(String(params.stamp), String(params.target));
+    const r = restoreBackupFile(String(params.stamp), String(params.target), ctx.store);
+    if (r.pruned) return bad(r.summary, { run: r });
     return ok(`${r.restored ? 'คืน' : 'ลบ'} ${path.basename(r.target)} จากรอบ ${r.from}`, { run: r });
   },
 };

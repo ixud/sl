@@ -30,6 +30,8 @@ plannotator annotate "<PLAN>" --gate --json --require-approval --result-file "<R
 ```
 
 - ใช้คำสั่งนี้เป๊ะ ๆ ห้ามห่อ ห้ามแก้รูปแบบ
+- ตั้ง `timeout` ของ shell tool เป็น `900000` ms (15 นาที) ทุกครั้งที่รันคำสั่งนี้
+- ถ้า tool รายงาน timeout หรือ status running: **ห้ามรันซ้ำ** — จบ response แล้วรอถูก resume จากนั้นรายงานบรรทัด decision ตามจริง
 - ห้ามอ่านไฟล์ result เอง — อ่านเฉพาะบรรทัด JSON สุดท้ายจาก stdout (`{"decision":...}`)
 - ห้ามรันคำสั่ง plannotator อื่น และรายงานบรรทัด decision ตามจริงทุกตัวอักษร
 

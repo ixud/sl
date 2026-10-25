@@ -7,7 +7,7 @@ import {
 
 test('toReq maps task tools (including the subagent alias) to a task request', () => {
   assert.deepEqual(toReq({ sessionID: 's', agent: 'buddha', tool: 'task', input: { subagent_type: 'builder' } }), { tool: 'task', subagent: 'builder', id: '' });
-  assert.deepEqual(toReq({ tool: 'subagent', input: { agentType: 'arena' } }), { tool: 'task', subagent: 'arena', id: '' });
+  assert.deepEqual(toReq({ tool: 'subagent', input: { agentType: 'arena-runner' } }), { tool: 'task', subagent: 'arena-runner', id: '' });
   assert.deepEqual(toReq({ tool: 'task', input: { name: 'poteto' } }), { tool: 'task', subagent: 'poteto', id: '' });
   assert.deepEqual(toReq({ tool: 'task', input: {} }), { tool: 'task', subagent: '', id: '' });
 });
@@ -105,6 +105,16 @@ test('U26 toChatMessage reads chat.message fields only (index.js:16853-16869)', 
   assert.equal(user.role, 'user');
   assert.equal(user.text, '>>abort');
   assert.equal(toChatMessage(input, { message: { id: 'm3' }, parts: [{ type: 'tool', tool: 'x' }] }).text, '');
+});
+
+test('U98 failed task exposes the error text for task-after', () => {
+  const r = toRes({ tool: 'task', status: 'error', id: 'x', input: { subagent_type: 'arena-runner' }, error: { message: 'spawn ENOENT' } });
+  assert.equal(r.error, true);
+  assert.equal(r.errorText, 'spawn ENOENT');
+  assert.equal(r.output, 'spawn ENOENT');
+  const s = toRes({ tool: 'task', status: 'error', error: 'plain failure' });
+  assert.equal(s.errorText, 'plain failure');
+  assert.equal(toRes({ tool: 'task', status: 'completed', result: 'done' }).errorText, undefined);
 });
 
 test('field accessors keep the old precedence', () => {

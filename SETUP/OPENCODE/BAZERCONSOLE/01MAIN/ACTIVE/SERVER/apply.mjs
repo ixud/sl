@@ -36,6 +36,21 @@ export function makeStore(dir) {
 
 const defaultStore = () => ({ dir: VAR_DIR, stateFile: STATE_FILE, backupDir: BACKUP_DIR, historyFile: HISTORY_FILE });
 
+const REAL_HOME = path.resolve(os.homedir());
+const homeKey = (p) => { const s = path.resolve(p || REAL_HOME); return process.platform === 'win32' ? s.toLowerCase() : s; };
+const underTmp = (p) => { const r = path.relative(path.resolve(os.tmpdir()), path.resolve(p)); return !r.startsWith('..') && !path.isAbsolute(r); };
+/** store ของ home นั้น — บ้านจริง/ไม่ระบุ = var/ จริง, home อื่น = <home>/.bazerconsole/var */
+export function storeFor(home) { const h = path.resolve(home || REAL_HOME); return homeKey(h) === homeKey(REAL_HOME) ? defaultStore() : makeStore(path.join(h, '.bazerconsole', 'var')); }
+/** snapshot ใช้ได้เฉพาะเมื่อ snapshotHome ตรงกับ home ที่ใช้งานและไม่ใช่โฟลเดอร์ทดสอบ */
+export const snapshotTrusted = (state, home) => {
+  const h = state?.snapshotHome;
+  if (!h) return true;
+  const cur = path.resolve(home || REAL_HOME);
+  if (homeKey(h) !== homeKey(cur)) return false;
+  return homeKey(cur) !== homeKey(REAL_HOME) || !underTmp(h);
+};
+export const trustedSnapshot = (state, home) => (snapshotTrusted(state, home) ? (state?.modelsSnapshot || null) : null);
+
 function ensureStore(store) {
   fs.mkdirSync(store.dir, { recursive: true });
   fs.mkdirSync(store.backupDir, { recursive: true });
@@ -86,12 +101,33 @@ export function record(st, items, store = defaultStore()) {
   const seen = new Set(doc.items.map((i) => i.target));
   for (const it of items) if (!seen.has(it.target)) doc.items.push(it);
   fs.writeFileSync(file, JSON.stringify(doc, null, 2), 'utf8');
+  pruneBackups(store);
 }
 
 export function history(row, store = defaultStore()) {
   ensureStore(store);
   const line = [row.at || now(), row.stamp, row.entry || '-', row.action || 'write', row.target, row.hashBefore || '-', row.hashAfter || '-', row.result || 'ok'].join('\t');
   fs.appendFileSync(store.historyFile, line + '\n', 'utf8');
+}
+
+const ROUND_RE = /^\d{8}-\d{6}-\d{3}$/;
+export const PRUNED_MSG = 'รอบสำรองนี้ถูกลบตามนโยบายเก็บ 100 รอบ';
+
+/** เก็บ 100 รอบล่าสุด + รอบที่ lastApply อ้างถึง — เฉพาะโฟลเดอร์ใน store.backupDir ที่ชื่อเป็น stamp */
+export function pruneBackups(store = defaultStore(), keep = 100) {
+  const root = path.resolve(store.backupDir);
+  let names;
+  try { names = fs.readdirSync(root); } catch { return []; }
+  const rounds = names.filter((n) => ROUND_RE.test(n) && isDir(path.join(root, n))).sort().reverse();
+  if (rounds.length <= keep) return [];
+  const last = readState(store).lastApply || {};
+  const protect = new Set([last.stamp, last.rolledBack?.stamp].filter((s) => s && ROUND_RE.test(s)));
+  const drop = rounds.slice(keep).filter((n) => !protect.has(n));
+  for (const n of drop) {
+    const abs = path.join(root, n);
+    if (path.dirname(abs) === root) { try { fs.rmSync(abs, { recursive: true, force: true }); } catch { /* เก็บไว้ถ้าลบไม่ได้ */ } }
+  }
+  return drop;
 }
 
 export function writeTextAtomic(target, text) {
@@ -103,7 +139,7 @@ export function writeTextAtomic(target, text) {
 }
 
 /** เขียนหนึ่ง entry — เรียกหลัง stateOf บอกว่า writable (export เพื่อใช้ทดสอบ) */
-export function writeEntry(entry, home, st, store = defaultStore()) {
+export function writeEntry(entry, home, st, store = storeFor(home)) {
   const { resolve } = makeResolver(home);
   const target = resolve(entry.target);
   const written = [];
@@ -209,7 +245,7 @@ export function setLineText(text, prefix, value) {
   return out.join('\n');
 }
 
-export function applyEntries(home, ids, store = defaultStore()) {
+export function applyEntries(home, ids, store = storeFor(home)) {
   ensureStore(store);
   const st = stamp();
   const state = readState(store);
@@ -256,7 +292,7 @@ export function applyEntries(home, ids, store = defaultStore()) {
 }
 
 /** เขียนค่า config เดียว (ใช้โดย settings-save / policy-set / toggle) */
-export function writeJsonc(home, targetTemplate, keys, value, { merge = false, entry = 'settings', st = stamp(), store = defaultStore() } = {}) {
+export function writeJsonc(home, targetTemplate, keys, value, { merge = false, entry = 'settings', st = stamp(), store = storeFor(home) } = {}) {
   const { resolve } = makeResolver(home);
   const target = resolve(targetTemplate);
   const cur = exists(target) ? readTextRaw(target) : '{\n}\n';
@@ -270,7 +306,7 @@ export function writeJsonc(home, targetTemplate, keys, value, { merge = false, e
 }
 
 /** เขียนข้อความที่เตรียมมาแล้ว (คงรูปเดิมทั้งไฟล์) — backup → atomic → history */
-export function writeTextWithBackup(home, targetTemplate, text, { entry = 'raw', st = stamp(), store = defaultStore() } = {}) {
+export function writeTextWithBackup(home, targetTemplate, text, { entry = 'raw', st = stamp(), store = storeFor(home) } = {}) {
   const { resolve } = makeResolver(home);
   const target = resolve(targetTemplate);
   const cur = exists(target) ? readTextRaw(target) : null;
@@ -288,7 +324,7 @@ export function policyEntries(policyId) {
 }
 
 /** เขียน permission ลง frontmatter ของไฟล์ agent ที่ติดตั้งแล้ว (ถ้ามีไฟล์) */
-export function writeAgentPermission(home, agentId, permission, { st = stamp(), store = defaultStore() } = {}) {
+export function writeAgentPermission(home, agentId, permission, { st = stamp(), store = storeFor(home) } = {}) {
   const { resolve } = makeResolver(home);
   const file = resolve(`\${CONFIG}/agents/${agentId}.md`);
   if (!exists(file)) return { changed: false, id: agentId, note: 'ยังไม่มีไฟล์ agent (ติดตั้งก่อน)' };
@@ -308,7 +344,7 @@ export function writeAgentPermission(home, agentId, permission, { st = stamp(), 
 const agentIdOf = (entry) => String(entry.valuePath || '').split('.')[1] || null;
 
 /** เขียนระดับของบันไดลงทุก entry ที่ผูกไว้ — config + frontmatter ของ agent file */
-export function setPolicy(home, policyId, levelId, store = defaultStore()) {
+export function setPolicy(home, policyId, levelId, store = storeFor(home)) {
   const level = policyLevelOf(policyId, levelId);
   const entries = policyEntries(policyId);
   if (!entries.length) throw new Error(`ไม่มี entry ที่ผูกกับ policy ${policyId}`);
@@ -345,7 +381,7 @@ export function setPolicy(home, policyId, levelId, store = defaultStore()) {
   };
 }
 
-export function undoPolicy(home, policyId = 'buddha-ladder', store = defaultStore()) {
+export function undoPolicy(home, policyId = 'buddha-ladder', store = storeFor(home)) {
   const state = readState(store);
   const cur = (state.policies || {})[policyId];
   const fallback = policyId === 'buddha-ladder' && state.policy && state.policy.policyId === policyId ? state.policy : null;
@@ -379,14 +415,14 @@ export function undoPolicy(home, policyId = 'buddha-ladder', store = defaultStor
   };
 }
 
-export function setBuiltin(home, mode) {
+export function setBuiltin(home, mode, store = storeFor(home)) {
   const state = mode === 'off'
     ? { plan: { mode: 'subagent', hidden: true }, build: { mode: 'subagent', hidden: true } }
     : { plan: { mode: 'primary', hidden: false }, build: { mode: 'primary', hidden: false } };
-  return writeJsonc(home, '${CONFIG}/opencode.jsonc', ['agent'], state, { merge: true, entry: 'builtin-toggle' });
+  return writeJsonc(home, '${CONFIG}/opencode.jsonc', ['agent'], state, { merge: true, entry: 'builtin-toggle', store });
 }
 
-export function retireOldFlow(home, name = 'bazer-flow', store = defaultStore()) {
+export function retireOldFlow(home, name = 'bazer-flow', store = storeFor(home)) {
   // ไม่ผูกกับ manifest entry แล้ว: การมี entry ที่ "ตั้งใจถอด" ปนกับ entry ที่ "ตั้งใจติดตั้ง"
   // ทำให้ plan รายงาน stale ตลอด (เจตนาตรงข้ามกัน) — ที่นี่สร้างค่าจากชื่อปลั๊กอินตรง ๆ
   const { resolve } = makeResolver(home);
@@ -404,10 +440,13 @@ export function retireOldFlow(home, name = 'bazer-flow', store = defaultStore())
   return { changed: true, target, stamp: st, removed: value };
 }
 
-export function rollback(home, st, store = defaultStore()) {
+export function rollback(home, st, store = storeFor(home)) {
   const dir = path.join(store.backupDir, st);
   const file = path.join(dir, 'manifest.json');
-  if (!fs.existsSync(file)) throw new Error(`ไม่พบ backup รอบ ${st}`);
+  if (!fs.existsSync(file)) {
+    if (ROUND_RE.test(String(st))) return { stamp: st, restored: 0, deleted: 0, pruned: true, summary: PRUNED_MSG };
+    throw new Error(`ไม่พบ backup รอบ ${st}`);
+  }
   const doc = JSON.parse(readText(file));
   const out = { stamp: st, restored: 0, deleted: 0 };
   for (const item of doc.items) {
@@ -437,7 +476,7 @@ export function readHistory(limit = 80, store = defaultStore()) {
 
 /* -------------------- template reset -------------------- */
 
-export function resetTemplate(home, id) {
+export function resetTemplate(home, id, store = storeFor(home)) {
   const entry = manifest.entries.find((e) => e.id === id);
   if (!entry) throw new Error(`ไม่พบ entry: ${id}`);
   if (entry.strategy !== 'template-once') throw new Error(`รีเซ็ตได้เฉพาะ template-once (${id} = ${entry.strategy})`);
@@ -445,10 +484,10 @@ export function resetTemplate(home, id) {
   const target = resolve(entry.target);
   const st = stamp();
   const text = readText(srcPath(entry));
-  const b = backupFile(st, target);
+  const b = backupFile(st, target, store);
   const h = writeTextAtomic(target, text);
-  record(st, [{ ...b, hashAfter: h }]);
-  history({ stamp: st, entry: `reset.${entry.id}`, action: 'reset', target, hashBefore: b.hashBefore, hashAfter: h });
+  record(st, [{ ...b, hashAfter: h }], store);
+  history({ stamp: st, entry: `reset.${entry.id}`, action: 'reset', target, hashBefore: b.hashBefore, hashAfter: h }, store);
   return { id: entry.id, target, stamp: st, created: !b.existed };
 }
 
@@ -502,15 +541,15 @@ export function cleanupPlan(home) {
   return { at: new Date().toISOString(), groups: groups.map((g) => ({ ...g, count: g.items.length })) };
 }
 
-export function cleanupOld(home, { apply = false, groups = ['agents', 'mirrors', 'plugins', 'plugin-dirs'] } = {}) {
+export function cleanupOld(home, { apply = false, groups = ['agents', 'mirrors', 'plugins', 'plugin-dirs'] } = {}, store = storeFor(home)) {
   const plan = cleanupPlan(home);
   const chosen = plan.groups.filter((g) => groups.includes(g.id));
   const items = chosen.flatMap((g) => g.items.map((i) => ({ ...i, group: g.id })));
   if (!apply) return { apply: false, count: items.length, groups: chosen.map((g) => ({ id: g.id, count: g.count })), items: items.map((i) => ({ group: i.group, name: i.name })) };
 
   const st = stamp();
-  let qdir = path.join(VAR_DIR, 'quarantine', st);
-  for (let i = 2; fs.existsSync(qdir); i++) qdir = path.join(VAR_DIR, 'quarantine', `${st}-${i}`);
+  let qdir = path.join(store.dir, 'quarantine', st);
+  for (let i = 2; fs.existsSync(qdir); i++) qdir = path.join(store.dir, 'quarantine', `${st}-${i}`);
   const moved = [];
   for (const it of items) {
     if (it.group === 'plugins' || !it.abs) continue;
@@ -520,7 +559,7 @@ export function cleanupOld(home, { apply = false, groups = ['agents', 'mirrors',
     try { fs.renameSync(it.abs, dest); }
     catch { fs.cpSync(it.abs, dest, { recursive: true }); fs.rmSync(it.abs, { recursive: true, force: true }); }
     moved.push({ group: it.group, from: it.abs, to: dest });
-    history({ stamp: st, entry: `cleanup.${it.group}`, action: 'quarantine', target: it.abs, result: 'moved' });
+    history({ stamp: st, entry: `cleanup.${it.group}`, action: 'quarantine', target: it.abs, result: 'moved' }, store);
   }
 
   const cfgGroup = chosen.find((g) => g.id === 'plugins');
@@ -531,7 +570,7 @@ export function cleanupOld(home, { apply = false, groups = ['agents', 'mirrors',
       const arr = getAtPath(readText(cfgFile), ['plugins']) || [];
       const drop = new Set(cfgGroup.items.map((i) => i.value));
       const keep = arr.filter((p) => !drop.has(p));
-      const r = writeJsonc(home, '${CONFIG}/opencode.jsonc', ['plugins'], keep, { entry: 'cleanup.plugins' });
+      const r = writeJsonc(home, '${CONFIG}/opencode.jsonc', ['plugins'], keep, { entry: 'cleanup.plugins', store });
       moved.push({ group: 'plugins', from: cfgFile, removed: [...drop], changed: r.changed });
     }
   }
@@ -570,7 +609,10 @@ export function listBackups(store = defaultStore(), limit = 40) {
 export function restoreBackupFile(stampId, target, store = defaultStore()) {
   const dir = path.join(store.backupDir, stampId);
   const mf = path.join(dir, 'manifest.json');
-  if (!fs.existsSync(mf)) throw new Error(`ไม่พบ backup รอบ ${stampId}`);
+  if (!fs.existsSync(mf)) {
+    if (ROUND_RE.test(String(stampId))) return { stamp: stampId, pruned: true, summary: PRUNED_MSG };
+    throw new Error(`ไม่พบ backup รอบ ${stampId}`);
+  }
   const doc = JSON.parse(readText(mf));
   const item = (doc.items || []).find((i) => path.resolve(String(i.target)) === path.resolve(String(target)));
   if (!item) throw new Error(`รอบ ${stampId} ไม่มีไฟล์นี้ในรายการ`);
@@ -591,7 +633,7 @@ export function restoreBackupFile(stampId, target, store = defaultStore()) {
 
 /* -------------------- full settings (overwrite ทั้งไฟล์) -------------------- */
 
-export function writeFullSettings(home, fileId, content) {
+export function writeFullSettings(home, fileId, content, store = storeFor(home)) {
   const spec = (settings.full?.files || []).find((f) => f.id === fileId);
   if (!spec) throw new Error(`ไม่รู้จักไฟล์ตั้งค่า: ${fileId}`);
   if (typeof content !== 'string' || !content.trim()) throw new Error('เนื้อหาว่าง');
@@ -605,15 +647,15 @@ export function writeFullSettings(home, fileId, content) {
   const target = resolve(spec.target);
   const st = stamp();
   const hadBom = exists(target) && fs.readFileSync(target, 'utf8').charCodeAt(0) === 0xfeff;
-  const b = backupFile(st, target);
+  const b = backupFile(st, target, store);
   const out = `${hadBom ? '\uFEFF' : ''}${text.endsWith('\n') ? text : `${text}\n`}`;
   const h = writeTextAtomic(target, out);
-  record(st, [{ ...b, hashAfter: h }]);
-  history({ stamp: st, entry: `full.${fileId}`, action: 'overwrite', target, hashBefore: b.hashBefore, hashAfter: h });
+  record(st, [{ ...b, hashAfter: h }], store);
+  history({ stamp: st, entry: `full.${fileId}`, action: 'overwrite', target, hashBefore: b.hashBefore, hashAfter: h }, store);
   // อ่านกลับและ parse อีกครั้ง — ไฟล์เสีย = คืนทันที
   try { JSON.parse(readText(target)); }
   catch (e) {
-    if (b.existed) fs.copyFileSync(path.join(BACKUP_DIR, st, 'files', safeRel(target)), target);
+    if (b.existed) fs.copyFileSync(path.join(store.backupDir, st, 'files', safeRel(target)), target);
     else fs.rmSync(target, { force: true });
     throw new Error(`เขียนแล้วอ่านกลับไม่ได้ (คืนไฟล์เดิมแล้ว): ${e.message}`);
   }
@@ -643,7 +685,7 @@ export function allControls() {
   return out;
 }
 
-export function saveSettings(home, patches) {
+export function saveSettings(home, patches, store = storeFor(home)) {
   const controls = allControls();
   const results = [];
   const st = stamp();
@@ -653,7 +695,7 @@ export function saveSettings(home, patches) {
     try {
       if (c.strategy === 'jsonc-set') {
         const value = c.type === 'number' ? Number(patch.value) : patch.value;
-        const r = writeJsonc(home, c.target, c.path.split('.'), value, { entry: `settings.${c.id}`, st });
+        const r = writeJsonc(home, c.target, c.path.split('.'), value, { entry: `settings.${c.id}`, st, store });
         results.push({ id: c.id, ok: true, changed: r.changed });
       } else if (c.strategy === 'line') {
         const { resolve } = makeResolver(home);
@@ -664,17 +706,17 @@ export function saveSettings(home, patches) {
         // Arena แบบใหม่เก็บ effort inline (model#effort) → ลบบรรทัด efforts รุ่นเก่า ไม่ให้ขัดกัน
         if (LEGACY_LINES[c.id]) next = stripLines(next, LEGACY_LINES[c.id]);
         if (next !== cur) {
-          const b = backupFile(st, target);
+          const b = backupFile(st, target, store);
           const h = writeTextAtomic(target, next);
-          record(st, [{ ...b, hashAfter: h }]);
-          history({ stamp: st, entry: `settings.${c.id}`, action: 'write', target, hashBefore: b.hashBefore, hashAfter: h });
+          record(st, [{ ...b, hashAfter: h }], store);
+          history({ stamp: st, entry: `settings.${c.id}`, action: 'write', target, hashBefore: b.hashBefore, hashAfter: h }, store);
         }
         results.push({ id: c.id, ok: true, changed: next !== cur });
       } else if (c.strategy === 'internal') {
-        const state = readState();
+        const state = readState(store);
         state.locks = state.locks || {};
         state.locks[c.path] = !!patch.value;
-        writeState(state);
+        writeState(state, store);
         results.push({ id: c.id, ok: true, changed: true });
       } else {
         throw new Error(`strategy ${c.strategy} ไม่รองรับ`);
@@ -683,12 +725,12 @@ export function saveSettings(home, patches) {
       results.push({ id: c.id, ok: false, why: e.message });
     }
   }
-  const out = readState();
+  const out = readState(store);
   // snapshot เฉพาะตอน "เพิ่งเปิด lock" (หรือยังไม่มีเลย) — ถ้าถ่ายทุกครั้งที่บันทึก
   // ค่าที่เพิ่งเปลี่ยนจะกลายเป็น snapshot แล้ว drift จะไม่มีวันตรวจเจอ (lock ตายทั้งฟีเจอร์)
   const turningOn = (patches || []).some((p) => p.id === 'lock.models' && p.value === true);
   const noSnap = !out.modelsSnapshot || Object.keys(out.modelsSnapshot).length === 0;
-  if (out.locks?.models && (turningOn || noSnap)) snapshotModels(home);
+  if (out.locks?.models && (turningOn || noSnap)) snapshotModels(home, undefined, store);
   return { stamp: st, results, ok: results.every((r) => r.ok) };
 }
 
@@ -699,9 +741,9 @@ export const LOCK_MODES = ['buddha', 'bazer', 'snack', 'advisor'];
  * บันทึกค่าปัจจุบันของโมเดล/effort ไว้เทียบ — แยกต่อโหมด
  * @param {string[]} modes ถ้าไม่ส่ง = ทุกโหมด (คงค่า snapshot ของโหมดอื่นไว้ ไม่ล้างทั้งก้อน)
  */
-export function snapshotModels(home, modes = LOCK_MODES) {
+export function snapshotModels(home, modes = LOCK_MODES, store = storeFor(home)) {
   const paths = (Array.isArray(modes) ? modes : [modes]).filter((m) => LOCK_MODES.includes(m));
-  const state = readState();
+  const state = readState(store);
   state.modelsSnapshot = state.modelsSnapshot || {};
   const { resolve } = makeResolver(home);
   const file = resolve('${CONFIG}/opencode.jsonc');
@@ -715,24 +757,19 @@ export function snapshotModels(home, modes = LOCK_MODES) {
     };
   }
   // ผูก snapshot กับ home — กัน Console อีกตัว (หรือ --home sandbox) เอาค่าไปใช้ข้ามเครื่อง
-  state.snapshotHome = homeKey(home);
-  writeState(state);
+  state.snapshotHome = path.resolve(home || os.homedir());
+  writeState(state, store);
   return paths;
 }
-
-/** home จริงของ snapshot (Console ที่ไม่ส่ง --home = home ของเครื่อง ไม่ใช่ cwd) */
-const homeKey = (h) => path.resolve(h || os.homedir());
 
 /**
  * คืนค่า model/effort จาก snapshot — ระบุ mode = คืนเฉพาะโหมดนั้น
  */
-export function restoreLockedModels(home, mode) {
-  const state = readState();
+export function restoreLockedModels(home, mode, store = storeFor(home)) {
+  const state = readState(store);
   const snap = state.modelsSnapshot;
   if (!snap || !Object.keys(snap).length) throw new Error('ยังไม่มี snapshot — กด “ถ่าย snapshot” ของโหมดนั้นก่อน');
-  if (state.snapshotHome && homeKey(home) !== state.snapshotHome) {
-    throw new Error(`snapshot นี้มาจาก home อื่น (${state.snapshotHome}) — กด “ถ่าย snapshot” ใหม่บนเครื่องนี้`);
-  }
+  if (!snapshotTrusted(state, home)) throw new Error('snapshot มาจากโฟลเดอร์ทดสอบ - สร้าง snapshot ใหม่');
   if (mode && !LOCK_MODES.includes(mode)) throw new Error(`ไม่รู้จักโหมด: ${mode}`);
   if (mode && !snap[mode]) throw new Error(`โหมด ${mode} ยังไม่มี snapshot — กด “ถ่าย snapshot” ของโหมดนี้ก่อน`);
   const wanted = mode ? [mode] : LOCK_MODES.filter((m) => snap[m]);
@@ -744,14 +781,14 @@ export function restoreLockedModels(home, mode) {
     if (!v) continue;
     for (const key of ['model', 'variant']) {
       if (v[key] == null || v[key] === '') { skipped.push(`${m}.${key}`); continue; }
-      const r = writeJsonc(home, '${CONFIG}/opencode.jsonc', ['agent', m, key], v[key], { entry: `lock.${m}.${key}`, st });
+      const r = writeJsonc(home, '${CONFIG}/opencode.jsonc', ['agent', m, key], v[key], { entry: `lock.${m}.${key}`, st, store });
       if (r.changed) changed.push(`${m}.${key}`);
     }
   }
   return { stamp: st, mode: mode || 'all', changed, skipped };
 }
 
-export function pstackPreset(home, mode, modelA, modelB) {
+export function pstackPreset(home, mode, modelA, modelB, store = storeFor(home)) {
   if (!modelA) throw new Error('ต้องระบุโมเดลอย่างน้อยหนึ่งตัว');
   const coding = new Set(['feature', 'bugfix', 'perf', 'hillclimb', 'how-explorer', 'why-investigators', 'reflect-tooling', 'swarm']);
   const patches = [];
@@ -759,5 +796,5 @@ export function pstackPreset(home, mode, modelA, modelB) {
     const model = mode === 'split' ? (coding.has(r.id) ? modelA : (modelB || modelA)) : modelA;
     patches.push({ id: `pstack.${r.id}`, value: model });
   }
-  return saveSettings(home, patches);
+  return saveSettings(home, patches, store);
 }

@@ -151,7 +151,7 @@ export function stateOf(entry, home) {
     return { ...base, state: hit && hit.trim() === want ? 'ok' : 'stale', writable: true, note: want };
   }
   if (strat === 'patch') {
-    return { ...base, state: 'design', note: 'ยังไม่ implement strategy patch', writable: false };
+    return { ...base, state: 'broken', note: 'strategy patch ยังไม่รองรับ', writable: false, blocker: true };
   }
   return { ...base, state: 'broken', note: `strategy ไม่รู้จัก: ${strat}`, writable: false, blocker: true };
 }
@@ -180,8 +180,10 @@ function scanForeign(home) {
   return out;
 }
 
-export function computePlan(home, { lawResult } = {}) {
-  const entries = manifest.entries.map((e) => {
+/** ข้อความ blocker กลาง — patch ต้องไม่กลายเป็น design เงียบ ๆ */
+export const blockerText = (e) => (e.strategy === 'patch' ? `strategy patch ยังไม่รองรับ: ${e.id}` : `${e.id}: ${e.note}`);
+
+export function computePlan(home, { lawResult } = {}) {  const entries = manifest.entries.map((e) => {
     try { return stateOf(e, home); }
     catch (err) { return { id: e.id, kind: e.kind, title: e.title, state: 'broken', note: err.message, writable: false, blocker: true }; }
   });
@@ -195,7 +197,7 @@ export function computePlan(home, { lawResult } = {}) {
   summary.locked = locked.length;             // ของผู้ใช้/ระบบไม่ทับ
   const foreign = scanForeign(home);
   const blockers = [];
-  for (const e of entries) if (e.blocker) blockers.push(`${e.id}: ${e.note}`);
+  for (const e of entries) if (e.blocker) blockers.push(blockerText(e));
   if (lawResult && lawResult.failed) blockers.push(...lawResult.rules.filter((r) => !r.ok).map((r) => `${r.id}: ${r.title}`));
   return { at: new Date().toISOString(), home, entries, summary, foreign, foreignTotal: foreign.length, blockers, applicable: entries.filter((e) => e.auto && e.writable).length };
 }

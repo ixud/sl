@@ -1,14 +1,19 @@
-/* bazer-flow paths — temp-root and shell-write classification.
+/* bazer-flow paths - temp-root and shell-write classification.
    Moved out of logic.mjs (pure, no imports). */
 
 export function normalizedPath(value) {
   return String(value ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
+const TEMP_SUBDIRS = ['bazer', 'opencode'];
+
 export function defaultTempRoots() {
   const base = process.env.TEMP || process.env.TMP || '';
   const roots = ['/tmp/bazer'];
-  if (base) roots.push(normalizedPath(base).replace(/\/+$/, '') + '/bazer');
+  if (base) {
+    const b = normalizedPath(base).replace(/\/+$/, '');
+    for (const sub of TEMP_SUBDIRS) roots.push(b + '/' + sub);
+  }
   return roots;
 }
 
@@ -32,7 +37,7 @@ const mapWsl = (s) => String(s ?? '').replace(/\/mnt\/([a-zA-Z])\//g, (m, d) => 
 const isAbs = (p) => /^([A-Za-z]:[\\/]|\/)/.test(p);
 
 /** null/merge redirections are not writes: 2>&1, 2>$null, >$null, 2>nul */
-const NEUTRAL_REDIRECT = /\d?>\s*(?:&[12]|\$null\b|nul\b)/gi;
+const NEUTRAL_REDIRECT = /\d?>\s*(?:&[12]|\$null\b|nul\b|\/dev\/null\b)/gi;
 const stripNeutral = (s) => String(s ?? '').replace(NEUTRAL_REDIRECT, ' ');
 
 export function looksLikeWrite(command, env = {}) {
@@ -40,7 +45,7 @@ export function looksLikeWrite(command, env = {}) {
 }
 
 /* ---------------------------------------------------------------- gate CLI
-   `plannotator annotate … --gate --json --require-approval --result-file …` */
+   `plannotator annotate - --gate --json --require-approval --result-file -` */
 
 const PLANNATOR_TOKEN = /(^|[\s"'`(&|;])(?:[^\s"'`]*[\\/])?plannotator(?:\.exe)?(?=$|[\s"'`)&|;])/i;
 const EXIT_ARG = /^(?:exit\s*=\s*)?\$lastexitcode$|^\$lastexitcode$|^\?$/i;
@@ -76,31 +81,43 @@ export function isGateCliCommand(command) {
    Simple same-command literals only. Anything unresolved stays project (fail closed). */
 
 export function resolveShellVars(command) {
-  const source = String(command ?? '');
   const vars = new Map();
-  for (const m of source.matchAll(/(?:^|[;\s])\$env:([A-Za-z_]\w*)\s*=\s*("([^"]*)"|'([^']*)')/gi)) vars.set('$env:' + m[1].toLowerCase(), m[3] ?? m[4] ?? '');
-  for (const m of source.matchAll(/(?:^|[;\s])\$([A-Za-z_]\w*)\s*=\s*("([^"]*)"|'([^']*)')/g)) {
-    const key = '$' + m[1].toLowerCase();
-    if (!vars.has(key)) vars.set(key, m[3] ?? m[4] ?? '');
-  }
-  let out = source;
-  for (const [key, value] of vars) out = out.replace(new RegExp(key.replace(/\$/g, '\\$') + '(?!\\w)', 'gi'), value);
+  const conflict = new Set();
+  const expandValue = (v) => {
+    let out = String(v);
+    for (let i = 0; i < 3; i++) {
+      const before = out;
+      for (const [k, val] of vars) out = out.replace(new RegExp(k.replace(/\$/g, '\\$') + '(?!\\w)', 'gi'), val);
+      if (out === before) break;
+    }
+    return out;
+  };
+  const src = String(command ?? '');
+  src.replace(/(?:^|[;\s])(\$env:)?\$([A-Za-z_]\w*)\s*=\s*("([^"]*)"|'([^']*)')/g, (m, ep, name, q, dq, sq) => {
+    const key = (ep ? '$env:' : '$') + name.toLowerCase();
+    const val = expandValue(dq ?? sq ?? '');
+    if (vars.has(key) && vars.get(key) !== val) conflict.add(key);
+    else if (!vars.has(key)) vars.set(key, val);
+    return m;
+  });
+  let out = src;
+  for (const key of conflict) vars.delete(key);
+  for (const [key, val] of vars) out = out.replace(new RegExp(key.replace(/\$/g, '\\$') + '(?!\\w)', 'gi'), val);
   return out;
 }
 
-/** read | temp | project for a shell command, after literal variable substitution */
 export function shellScope(command, env = {}) {
   return shellWrite(command, env).scope;
 }
 
 export function expandShell(command, env = {}) {
-  let out = resolveShellVars(command);
+  let out = String(command ?? '');
   for (const key of ['TEMP', 'TMP', 'LOCALAPPDATA', 'USERPROFILE', 'APPDATA']) {
     const value = String((env && env[key]) || process.env[key] || '');
     if (!value) continue;
     out = out.replace(new RegExp('\\$env:' + key + '\\b', 'gi'), value).replace(new RegExp('%' + key + '%', 'gi'), value);
   }
-  return out;
+  return resolveShellVars(out);
 }
 
 const cleanArg = (v) => String(v).replace(/^["']|["']$/g, '');
@@ -113,20 +130,58 @@ export function resolveJoinPath(s) {
   });
 }
 
+const cleanTarget = (t) => String(t).replace(/^[\s"'`\\]+|[\s"'`\\]+$/g, '');
+const pathish = (t) => /[\\/]|^[A-Za-z]:|^\$|^%/.test(t);
+function targetsIn(stmt) {
+  const out = [];
+  for (const m of stmt.matchAll(/>{1,2}\s*([^\s;&|]+)/g)) out.push(m[1]);
+  for (const m of stmt.matchAll(/"([^"]*)"|'([^']*)'|`([^`]*)`/g)) {
+    const v = m[1] ?? m[2] ?? m[3];
+    if (!/[>|;&]/.test(v)) out.push(v);
+  }
+  for (const m of stmt.matchAll(/(?:^|[\s;&|])(?:set-content|add-content|out-file|remove-item|move-item|copy-item|new-item|rename-item|mkdir|rm|mv|cp)\b([^;&|]*)/gi)) {
+    for (const tok of m[1].split(/\s+/)) out.push(tok);
+  }
+  return out.map(cleanTarget).filter((t) => t && pathish(t));
+}
+
+const unresolvedTarget = (t) => UNRESOLVED.test(String(t).replace(BUILTIN, ' '));
+
 function classifyWrite(raw, env, detail, cwd) {
   const resolved = mapWsl(resolveJoinPath(expandShell(raw, env)));
-  if (unresolved(resolved)) return { write: true, detail: 'unresolved-var', scope: 'project' };
-  if (shellTouchesTemp(resolved)) return { write: true, detail, scope: 'temp' };
-  const rel = [...resolved.matchAll(/>{1,2}\s*([^\s;&|"']+)/g)].map((m) => m[1]).filter((t) => !isAbs(t));
-  if (rel.length && cwd && shellTouchesTemp(cwd)) return { write: true, detail, scope: 'temp' };
-  return { write: true, detail, scope: 'project' };
+  const targets = [];
+  for (const stmt of stripNeutral(resolved).split(/\r?\n|;/)) {
+    if (/^\s*(?:\$env:)?\$[A-Za-z_]\w*\s*=/.test(stmt)) continue;
+    targets.push(...targetsIn(stmt));
+  }
+  if (!targets.length) {
+    if (shellTouchesTemp(resolved)) return { write: true, detail, scope: 'temp' };
+    const rel = [...resolved.matchAll(/>{1,2}\s*([^\s;&|"']+)/g)].map((m) => m[1]).filter((t) => !isAbs(t));
+    if (rel.length && cwd && shellTouchesTemp(cwd)) return { write: true, detail, scope: 'temp' };
+    return { write: true, detail, scope: 'project' };
+  }
+  for (const t of targets) {
+    if (unresolvedTarget(t)) return { write: true, detail: 'unresolved-var', scope: 'project' };
+    if (!isTempPath(t)) return { write: true, detail, scope: 'project' };
+  }
+  return { write: true, detail, scope: 'temp' };
 }
+
+
 
 const INTERP = /(python[0-9.]*|node|perl|ruby)\s+(-c|-e)\b/i;
 const INTERP_WRITE = /open\s*\([^)]*['"][wa]b?['"]|writeFile|File\.write|>{1,2}/i;
 const innerOf = (cmd) => {
-  const m = /(?:bash|sh|cmd|powershell(?:\.exe)?)\s+(?:-c|\/c|-Command)\s+("[^"]*"|'[^']*')/i.exec(cmd);
-  return m ? m[1].replace(/^["']|["']$/g, '') : '';
+  const m = /(?:bash|sh|cmd|powershell(?:\.exe)?)\s+(?:-c|\/c|-Command)\s+(["'])/i.exec(cmd);
+  if (!m) return '';
+  const q = m[1];
+  const start = m.index + m[0].length;
+  const tail = String(cmd).slice(start);
+  const semi = tail.indexOf(';');
+  const seg = semi >= 0 ? tail.slice(0, semi) : tail;
+  const end = seg.lastIndexOf(q);
+  if (end < 0) return '';
+  return seg.slice(0, end).replace(/`"/g, '"').replace(/\\"/g, '"');
 };
 const cwdIn = (cmd, base) => {
   const m = /(?:^|[;&|]\s*)(?:cd\s+(?:\/d\s+)?|set-location\s+)("[^"]*"|'[^']*'|[^\s;&|]+)/i.exec(cmd);
@@ -135,7 +190,7 @@ const cwdIn = (cmd, base) => {
 
 /** write? + detail + scope for one shell command (inner -c scripts analysed too) */
 export function shellWrite(command, env = {}, opts = {}) {
-  const raw = String(command ?? '');
+  const raw = expandShell(String(command ?? ''), env);
   const inner = innerOf(raw);
   if (inner) {
     const nested = shellWrite(inner, env, { cwd: cwdIn(inner, cwdIn(raw, opts.cwd)) });
@@ -155,7 +210,7 @@ export function shellTouchesTemp(command, tempRoots = defaultTempRoots()) {
   const s = normalizedPath(command);
   return (tempRoots || []).some((root) => {
     const r = normalizedPath(root);
-    return !!r && s.includes(r);
+    return !!r && (s.includes(r + '/') || s.endsWith(r));
   });
 }
 
