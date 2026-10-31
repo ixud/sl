@@ -73,6 +73,17 @@
       "confirm": "none"
     },
     {
+      "id": "ladder-set",
+      "group": "modes",
+      "title": "ตั้งบันได 3 ขั้น (L0/L1/L2)",
+      "cta": "ตั้งระดับนี้",
+      "subtitle": "เขียน ladder.json ของปลั๊กอิน · L2 ต้องพิมพ์ยืนยัน",
+      "kind": "write",
+      "risk": { "level": 3, "why": "L2 เหมาเข่งเปิดงานเขียน/build/test/commit/เว็บหลัง GATE 2 — ยังกัน protected paths, force-push, reset --hard, clean -f และลบนอก %TEMP%" },
+      "confirm": "none",
+      "params": ["level", "confirm", "hours"]
+    },
+    {
       "id": "builtin-toggle",
       "group": "modes",
       "title": "ซ่อน/คืน Plan & Build ของ OpenCode",

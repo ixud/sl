@@ -161,8 +161,10 @@ export function toPermissionReq(event) {
   const action = String((event && event.action) || '');
   const resources = Array.isArray(event && event.resources) ? event.resources : [];
   const first = String(resources[0] == null ? '' : resources[0]);
-  if (action === 'edit' || action === 'write' || action === 'patch') return { tool: 'write', path: first };
-  if (action === 'bash' || action === 'shell') return { tool: 'shell', command: first };
+  const keep = resources.slice();
+  if (action === 'edit' || action === 'write' || action === 'patch') return { tool: 'write', path: first, resources: keep };
+  if (action === 'bash' || action === 'shell') return { tool: 'shell', command: first, resources: keep };
   if (action === 'task' || action === 'subagent') return { tool: 'task', subagent: lower(first) };
+  if (action === 'external_directory') return { tool: 'read', resources: keep };
   return { tool: 'read' };
 }

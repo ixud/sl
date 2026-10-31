@@ -1,4 +1,4 @@
-﻿// @ts-nocheck
+// @ts-nocheck
 /* bazer-flow - thin hook wiring only. Logic: engine/runtime. Payloads: adapter. Store: store. */
 import { Plugin } from '@opencode/plugin';
 import fs from 'node:fs';
@@ -7,28 +7,32 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRuntime, classifyPlanResult } from './runtime.mjs';
+import { LADDER_FILE } from './ladder.mjs';
 import { toReq, toRes, toChatMessage, toLink, toDeleted, toPermissionReq, toToolEvent, toInboxUser, toAgentEvent, agentOf, agentFieldOf, sessionIdOf, roleOf } from './adapter.mjs';
 import { fsStore, ringLog, pruneState, loadSpecFile } from './store.mjs';
 import { createDiag, createFlowLog, codeOf, bootEntry, shapeOf, shapeDeep, ctxNames } from './diag.mjs';
 import { isTempPath, defaultTempRoots, isGateCliCommand } from './paths.mjs';
+import { sharedState, recordHook } from './shared.mjs';
+import { runPerm } from './permhook.mjs';
+import { credentialPath } from './rules.mjs';
 const DIR = path.join(os.homedir(), '.local', 'state', 'opencode', 'bazer-flow', 'v2');
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const DEBUG = process.env.BAZER_FLOW_DEBUG === '1';
-const BUILD = '2v'; const INST = crypto.randomBytes(2).toString('hex');
+const BUILD = '2ad'; const INST = crypto.randomBytes(2).toString('hex');
 const CLOSED_HINT = 'STOP. Flow unavailable - project writes are closed. Tell the user to restart OpenCode.';
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SPEC_URL = new URL('./flow.spec.json', import.meta.url);
 const HOOKS = ['agent.transform', 'tool.execute.before', 'tool.execute.after', 'permission.evaluate', 'session.context', 'event.subscribe'];
 const chat = { rt: null, emit: null };
 const missSeen = new Set();
-const GKEY = Symbol.for('bazer.flow.shared');
-const G = (globalThis[GKEY] = globalThis[GKEY] || { hooks: new Set(), evt: new Map(), flow: {} });
+const G = sharedState();
 const CATALOG = /(\.updated$)|^session\.(text|reasoning|step|usage|execution|tool\.input|tool\.progress)\.|^session\.(renamed|viewed|instructions\.updated|retry\.scheduled|tool\.progress)$|^project\.updated$|^form\./;
 const DEEP = new Set(['session.inbox.enqueued', 'session.tool.success', 'session.tool.called', 'session.agent.selected']);
 function hookSeen(name) {
-  if (!chat.emit || G.hooks.has(name)) return;
-  G.hooks.add(name);
-  chat.emit({ event: 'hook-seen', hook: name, inst: INST });
+  try {
+    if (!chat.emit || !recordHook(name)) return;
+    chat.emit({ event: 'hook-seen', hook: name, inst: INST });
+  } catch { /* diagnostics never break the host */ }
 }
 function setRules(agent, rules) {
   agent.permissions = Array.isArray(agent.permissions) ? agent.permissions : [];
@@ -80,7 +84,7 @@ export default Plugin.define({
     pruneState(DIR, WEEK_MS, Date.now());
     let rt = null;
     try {
-      rt = createRuntime({ spec: loadSpecFile(SPEC_URL), store, now: () => Date.now(), log: emit, badgeSink: (sid, text) => store.badge(sid, text) });
+      rt = createRuntime({ spec: loadSpecFile(SPEC_URL), store, now: () => Date.now(), log: emit, badgeSink: (sid, text) => store.badge(sid, text), ladderPath: LADDER_FILE(os.homedir()) });
     } catch (e) { fail('setup', '', e); }
     chat.rt = rt;
     try { if (ctx.chat && typeof ctx.chat.hook === 'function') await ctx.chat.hook('message', onChatMessage); } catch (e) { fail('chat.register', '', e); }
@@ -92,7 +96,7 @@ export default Plugin.define({
       return { allow: false, hint: CLOSED_HINT };
     };
     const before = (sid, req) => (rt ? rt.before(sid, req) : fallback(req));
-    const peek = (sid, req) => (rt ? rt.peek(sid, req) : fallback(req));
+    const peek = (sid, req, effect, action, resources, reqAgent) => (rt ? rt.peek(sid, req, effect, action, resources, reqAgent) : fallback(req));
     try {
       await ctx.agent.transform((editor) => {
         const builder = editor.get('builder');
@@ -137,19 +141,18 @@ export default Plugin.define({
         if (rt) rt.after(sid, res);
       } catch (e) { fail('execute.after', sid, e); }
     });
-    await ctx.permission.hook('evaluate', (event) => {
+    const permSeen = (G.perm = G.perm || new Map());
+    const skipSeen = (G.skip = G.skip || new Map());
+    const onPerm = (event) => {
       const sid = sessionIdOf(event) || String(event.sessionID || '');
       hookSeen('permission.evaluate');
-      try {
-        const req = toPermissionReq(event);
-        if (!event || !event.action) diag.miss('permission.evaluate', event);
-        const verdict = peek(sid, req);
-        if (!verdict.allow) { flowLog.deny('permission.evaluate', sid, req, verdict.detail || codeOf(verdict.hint)); event.effect = 'deny'; event.message = 'bazer-flow: ' + verdict.hint; }
-      } catch (e) {
-        fail('permission.evaluate', sid, e);
-        event.effect = 'deny';
-        event.message = 'bazer-flow: ' + CLOSED_HINT;
-      }
+      runPerm(event, {
+        sid, toReq: toPermissionReq, peek, emit, deny: flowLog.deny, miss: diag.miss, codeOf, permSeen, skipSeen, credentialPath,
+        fail: (e) => fail('permission.evaluate', sid, e),
+      });
+    };
+    await ctx.permission.hook('evaluate', (event) => {
+      try { onPerm(event); } catch (e) { if (!G.perr) { G.perr = 1; try { emit({ event: 'perm-err', msg: String((e && e.message) || e).slice(0, 120) }); } catch { /* log never throws */ } } }
     });
     await ctx.session.hook('context', (event) => {
       const sid = sessionIdOf(event) || String(event.sessionID || '');

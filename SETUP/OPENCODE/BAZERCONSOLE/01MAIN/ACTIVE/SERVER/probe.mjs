@@ -8,9 +8,9 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { makeResolver } from './env.mjs';
 import { probes, manifest } from './manifest.mjs';
-import { policyLevel } from './plan.mjs';
+import { policyLevel, policyPermission } from './plan.mjs';
 import { getAtPath } from './jsonc.mjs';
-import { readState, storeFor } from './apply.mjs';
+import { readState, storeFor, readLadder } from './apply.mjs';
 
 const run = (cmd, args = [], timeout = 20000) => {
   // Windows: `opencode` เป็น shim (.cmd/.ps1) — spawn ตรง ๆ จะ ENOENT ต้องผ่าน shell
@@ -92,6 +92,16 @@ export function agentFilePermission(home, agentId) {
     else if (inPerm) out[k] = v;
   }
   return out;
+}
+
+/** Pure drift check: md still has a frontmatter permission block, config != computed. */
+export function permissionDrift(entry, level, cfg, md) {
+  const want = policyPermission(entry, level);
+  const got = cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
+  const keys = new Set([...Object.keys(want), ...Object.keys(got)]);
+  const diff = [...keys].filter((k) => got[k] !== want[k]).map((k) => `${k}:${String(got[k] ?? '-')}!=${String(want[k] ?? '-')}`);
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(String(md || ''));
+  return { want, diff, hasBlock: !!fm && /^permission\s*:/m.test(fm[1]) };
 }
 
 function findPlannotatorCli(home) {
@@ -212,60 +222,31 @@ const impl = {
   },
   'permission-level': (p, home, store) => {
     const state = readState(store);
-    const perPolicy = (state.policies || {})[p.policy];
-    const legacy = state.policy && state.policy.policyId === p.policy ? state.policy : null;
-    const levelId = perPolicy?.level ?? legacy?.level;
+    const levelId = (state.policies || {})[p.policy]?.level ?? (state.policy && state.policy.policyId === p.policy ? state.policy.level : null);
     const level = policyLevel(p.policy, levelId);
-    // params.expect = ค่าที่บังคับเพิ่มเติมของ agent นั้น (เช่น ARENA-RUNNER ห้าม spawn) — ทับค่าในระดับ
-    const expected = { ...level.permission, ...(p.expect || {}) };
-    // ต้องมีค่าอยู่ใน config จริงด้วย ไม่งั้น permission ที่เห็นอาจมาจากไฟล์โหมดเอง (false positive)
+    const entry = manifest.entries.find((e) => e.valuePath === `agent.${p.agent}.permission`);
+    if (!entry) return { ok: false, detail: `no cfg entry for ${p.agent}` };
     const { resolve } = makeResolver(home);
     const cfgFile = resolve('${CONFIG}/opencode.jsonc');
     let cfgValue;
     if (fs.existsSync(cfgFile)) {
       try { cfgValue = getAtPath(fs.readFileSync(cfgFile, 'utf8'), ['agent', p.agent, 'permission']); } catch { cfgValue = undefined; }
     }
-    const data = opencodeAgents();
-    const agent = data.find((x) => x.id === p.agent);
-    if (!agent) return { ok: false, detail: `ไม่พบ agent ${p.agent}` };
-    const resolved = {};
-    for (const r of agent.permissions || []) {
-      if (r.resource !== '*') continue;
-      if (r.action === '*') continue;
-      resolved[r.action] = r.effect; // กฎที่อยู่ท้ายสุดชนะ
+    const mdWrong = [];
+    for (const e of manifest.entries) {
+      const m = /^agent\.(.+)\.permission$/.exec(e.valuePath || '');
+      if (m && Object.keys(agentFilePermission(home, m[1])).length) mdWrong.push(m[1]);
     }
-    // config ต้องมีค่าของบันไดจริง ไม่ใช่แค่มี key (พิสูจน์ว่าบันไดครอบ agent ตัวนี้)
-    const cfgWrong = [];
-    for (const [action, effect] of Object.entries(expected)) {
-      const got = cfgValue && typeof cfgValue === 'object' ? cfgValue[action] : undefined;
-      if (got !== effect) cfgWrong.push(`${action}: config มี ${got ?? '(ไม่มี)'} แต่คาด ${effect}`);
-    }
-    // ไฟล์ agent เอง (frontmatter) มาต่อท้าย config → ค่าในไฟล์ชนะ → ต้องนับมันตอนเทียบผลจริง
-    const filePerm = agentFilePermission(home, p.agent);
-    const effective = { ...expected, ...filePerm };
-    const shadowed = Object.entries(filePerm).filter(([a, v]) => expected[a] !== undefined && expected[a] !== v);
-    const wrong = [];
-    for (const [action, effect] of Object.entries(effective)) {
-      if (resolved[action] !== effect) wrong.push(`${action}: คาด ${effect} แต่ได้ ${resolved[action] ?? '(ไม่มี)'}`);
-    }
+    const mdFile = resolve(`${CONFIG}/agents/${p.agent}.md`);
+    const md = fs.existsSync(mdFile) ? fs.readFileSync(mdFile, 'utf8') : '';
+    const d = permissionDrift(entry, level, cfgValue, md);
+    const cfgWrong = cfgValue === undefined ? ['config missing'] : d.diff;
     let detail;
-    if (cfgValue === undefined) {
-      detail = 'ยังไม่ได้เขียนระดับนี้ลง config — ค่าที่เห็นอาจมาจากไฟล์โหมดเอง';
-    } else if (cfgWrong.length) {
-      detail = `config ไม่ตรงกับระดับ ${level.id} — ${cfgWrong.join(' · ')}`;
-    } else if (wrong.length) {
-      detail = wrong.join(' · ');
-    } else {
-      detail = `ระดับ ${level.id} ${level.name} มีผลจริง`;
-    }
-    if (shadowed.length) {
-      detail += ` · ไฟล์ agent บังคับ ${shadowed.map(([a, v]) => `${a}=${v}`).join(', ')} (บันไดยกไม่ได้)`;
-    }
-    return {
-      ok: cfgValue !== undefined && cfgWrong.length === 0 && wrong.length === 0,
-      detail,
-      extra: { level: level.id, resolved, inConfig: cfgValue !== undefined, expected, filePerm, cfgWrong, shadowed },
-    };
+    if (cfgValue === undefined) detail = `config missing agent.${p.agent}.permission`;
+    else if (cfgWrong.length) detail = `config != level ${level.id} - ${cfgWrong.slice(0, 6).join(' | ')}`;
+    else if (mdWrong.length) detail = `md still has permission: ${mdWrong.join(', ')}`;
+    else detail = `level ${level.id} ${level.name} single-owner OK`;
+    return { ok: cfgWrong.length === 0 && mdWrong.length === 0, detail, extra: { level: level.id, expected: d.want, cfgWrong, mdWrong } };
   },
   'json-file': (p, home) => {
     const { resolve } = makeResolver(home);
@@ -321,6 +302,19 @@ const impl = {
   },
 };
 
+export function ladderProbe(home) {
+  const { resolve } = makeResolver(home);
+  const r = readLadder(home);
+  let spec = false;
+  try { spec = /\bladder\b/.test(fs.readFileSync(resolve('${CONFIG}/plugins/bazer-flow/flow.spec.json'), 'utf8')); } catch { /* ยังไม่ติดตั้ง */ }
+  const ok = r.valid && spec;
+  const exp = r.expires == null ? 'ไม่กำหนด' : new Date(r.expires).toISOString();
+  return {
+    ok,
+    detail: ok ? `L${r.level} · หมดอายุ ${exp} · spec มี ladder` : !r.valid ? `ladder.json ไม่มี/ไม่ถูกต้อง/หมดอายุ (${r.path})` : 'flow.spec.json ยังไม่ประกาศ ladder',
+  };
+}
+
 export const PROBE_KINDS = Object.keys(impl);
 
 export function runProbes(home, store = storeFor(home)) {  const results = [];
@@ -334,6 +328,8 @@ export function runProbes(home, store = storeFor(home)) {  const results = [];
       results.push({ id: p.id, title: p.title, ok: false, severity: p.severity, detail: e.message });
     }
   }
+  const lad = ladderProbe(home);
+  results.push({ id: 'ladder-state', title: 'บันได 3 ขั้น (ladder.json)', severity: 'warn', ...lad });
   const failed = results.filter((r) => !r.ok && r.severity === 'fail');
   return { at: new Date().toISOString(), results, ok: failed.length === 0, failed: failed.length, warn: results.filter((r) => !r.ok && r.severity === 'warn').length };
 }

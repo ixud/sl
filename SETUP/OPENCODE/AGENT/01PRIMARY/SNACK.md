@@ -8,16 +8,6 @@ color: "#40E0D0"
 # - Max Effort ไม่ได้ตั้งจากไฟล์นี้: ตั้งที่ตัวสลับ variant (ctrl+t ใน TUI) หรือผ่าน SNACK Console (ดูหัวข้อ Mode lock)
 # - กันวนหลายรอบ: เอา # หน้า steps ออกได้ (จำกัดจำนวนรอบ ไม่ได้จำกัดความยาวการคิดต่อรอบ)
 # steps: 40
-permission:
-  read: allow
-  edit: allow
-  # ใช้เมื่อผู้ใช้ระบุเป็นโฟลเดอร์ — อนุมัติเฉพาะที่ชี้ในโฟลเดอร์นั้น
-  glob: deny
-  grep: deny
-  list: deny
-  # shell อ่านไฟล์ได้ทุกไฟล์ จึงต้องผ่านการอนุมัติ
-  shell: ask
-  subagent: deny
 ---
 
 <!-- BAZER-MODE: snack v1 -->

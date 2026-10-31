@@ -2,14 +2,16 @@
    No OpenCode imports, no IO: store, clock and sinks are injected.
    State and meta are read from the store on every access (no in-memory state cache). */
 import { loadSpec, init, check, apply, remind, badge as engineBadge, serialize, deserialize } from './engine.mjs';
-import { isTempPath, looksLikeWrite, shellTouchesTemp, defaultTempRoots, isProtectedPath, protectedInCommand, isGateCliCommand, gateCliVerdict, shellWrite, resolveShellVars, expandShell } from './paths.mjs';
+import { isTempPath, looksLikeWrite, shellTouchesTemp, defaultTempRoots, isProtectedPath, protectedInCommand, credentialInCommand, isGateCliCommand, gateCliVerdict, shellWrite, resolveShellVars, expandShell } from './paths.mjs';
 import { shapeDeep, stringLeaves, hasKey } from './diag.mjs';
 import { createShellMap, shellIdFrom, shellEndLeaves, RUNNING_HINT } from './shellend.mjs';
 import { denyHint, tempOnlyHint, migrateOf, taskAfter, taskStatus, requiredAgent } from './child.mjs';
 import { gateToolOutcome, gateToolHead, toolLeaves, classifyPlanResult, lastGateDecision } from './gatetool.mjs';
+import { loadAgentModes, modeOf, modeVerdict } from './agentmode.mjs';
+import { loadLadderSpec, applyLadder, dangerVerdict } from './ladder.mjs';
+import { sharedBox } from './shared.mjs';
 export { classifyPlanResult } from './gatetool.mjs';
 import os from 'node:os';
-
 const META_KEY = 'meta';
 const PROTECTED_HINT = 'Protected path. Never edit plugin/config/state. Stop and tell the user.';
 const WRITE_TOOL_HINT = 'Use the write/edit tool with a full literal path under %TEMP%\\bazer\\<task>\\ instead of shell redirects.';
@@ -22,15 +24,16 @@ const DETAIL_HINT = {
 const ORPHAN_HINT = 'STOP. Flow link missing — project writes are closed. Tell the user to restart OpenCode.';
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const rawOf = (v) => String(v == null ? '' : v).slice(0, 120);
-
 /** Version of the Plannotator OpenCode plugin whose output strings we classify. */
 export const PLANNOTATOR_VERSION = '0.28.23';
 
-export function createRuntime({ spec, store, now, log, badgeSink, home, env: envIn = {} } = {}) {
+export function createRuntime({ spec, store, now, log, badgeSink, home, ladderPath, ladderLoader, env: envIn = {} } = {}) {
   const clock = typeof now === 'function' ? now : () => Date.now();
   const ENV = Object.assign({}, process.env, envIn || {});
   const env = { HOME: String(home || ENV.USERPROFILE || os.homedir()) };
   loadSpec(spec);
+  const agentModes = loadAgentModes(spec);
+  const ladderSpec = loadLadderSpec(spec), ladderFile = ladderPath || null, ladderLoad = typeof ladderLoader === 'function' ? ladderLoader : null;
 
   const flowIds = new Set(Object.keys(spec.flows));
   const subagentIds = new Set([...(spec.defaults.helpers || [])]);
@@ -158,12 +161,6 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
   function gateHas(id) { return !!id && gateList().includes(String(id)); }
   function gateDrop(id) { store.set('gcli', gateList().filter((x) => x !== String(id || ''))); }
 
-  function sharedBox() {
-    const box = globalThis[Symbol.for('bazer.flow.shared')] || (globalThis[Symbol.for('bazer.flow.shared')] = {});
-    box.checks = box.checks || new Set(); box.dups = box.dups || new Set(); box.plain = box.plain || new Set(); box.sh = box.sh || new Set(); box.gca = box.gca || new Set(); box.mig = box.mig || new Set(); box.ta = box.ta || new Set(); box.gcl = box.gcl || new Set();
-    return box;
-  }
-
   function gateCheck(callId, cmd) {
     const gid = String(callId || ''); const box = sharedBox(); const key = gid || cmd;
     if (box.checks.has(key)) return;
@@ -203,6 +200,7 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
     if (t === 'write' && isProtectedPath(req.path, env)) return { allow: false, hint: PROTECTED_HINT, detail: 'protected' };
     if (t === 'shell') {
       const cmd = expandShell(String(req.command || ''), ENV);
+      if (credentialInCommand(cmd)) return { allow: false, hint: PROTECTED_HINT, detail: 'protected' };
       if (shellWrite(cmd, ENV).write && protectedInCommand(cmd, env)) return { allow: false, hint: PROTECTED_HINT, detail: 'protected' };
     }
     return null;
@@ -244,6 +242,12 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
   function before(sid, req) {
     if (req && req.tool === 'shell' && /plannotator/i.test(String(req.command || ''))) gateCheck(req.id, String(req.command));
     const r = evaluate(sid, req);
+    if (r.verdict.allow) { const d = dangerVerdict({ r, req, agent: agentOf(r.root), specLadder: ladderSpec, file: ladderFile, loader: ladderLoad, env, temps, now: clock() }); if (d) return d; }
+    if (!r.flow && r.verdict.allow) {
+      const agent = agentOf(r.root);
+      const mv = modeVerdict(modeOf(agentModes, agent), req, agent, ENV, temps);
+      if (mv) return mv;
+    }
     const cid = req && req.id ? 'b:' + String(req.id) : '';
     if (r.flow && r.verdict.allow && seenOnce(cid)) {
       if (r.ask.t === 'subagent') remember(req && req.id, r.ask.name);
@@ -259,9 +263,10 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
     return r.verdict;
   }
 
-  /** Same answer as before(), zero mutation of state/store/log. */
-  function peek(sid, req) {
-    return evaluate(sid, req).verdict;
+  /** Same answer as before(), zero mutation of state/store/log; ladder may grant only from 'ask'. */
+  function peek(sid, req, effect, action, resources, reqAgent) {
+    const r = evaluate(sid, req);
+    return applyLadder({ r, req, effect, action, resources, sid, reqAgent, agent: agentOf(r.root), specLadder: ladderSpec, spec, file: ladderFile, loader: ladderLoad, env, temps, now: clock(), log: gateLog }) || r.verdict;
   }
 
   function gateLog(entry) {
@@ -292,13 +297,15 @@ export function createRuntime({ spec, store, now, log, badgeSink, home, env: env
       put({ root, flow, from: state.phase, to: state.phase, why });
       return state;
     }
+    const ghead = String((leaves && leaves[0]) || '').slice(0, 200);
+    const gex = [...text.matchAll(/(?:^|[\s;])(?:EXIT|exit(?:\s+code)?)\s*[=:]?\s*(-?\d+)\b/gi)].pop();
     if (pendingKind) {
       const shid = shellIdFrom(meta, leaves); if (shid) shells.remember(shid, { callId: gid, sid: id, root, phase: state.phase, ts: clock() });
-      put({ root, flow, from: state.phase, to: state.phase, outcome: pendingKind }); return state;
+      put({ root, flow, from: state.phase, to: state.phase, outcome: pendingKind, head: ghead, ...(gex ? { exit: Number(gex[1]) } : {}) }); return state;
     }
     if (decisive && gid) { seenOnce('g:' + gid); gateDrop(gid); }
     const next = apply(state, { t: 'plan', outcome }, clock());
-    put({ root, flow, from: state.phase, to: next.phase, outcome: pendingKind || outcome });
+    put({ root, flow, from: state.phase, to: next.phase, outcome: pendingKind || outcome, ...(outcome === 'pending' ? { head: ghead, ...(gex ? { exit: Number(gex[1]) } : {}) } : {}) });
     if (same(next, state)) return state;
     record(root, flow, state, next, 'gate-cli', { callId6: gid.slice(-6) }, gid);
     return next;

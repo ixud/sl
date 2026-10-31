@@ -2,14 +2,6 @@
 description: "BAZER — โหมดสุดยอดผู้นำด้านนวัตกรรม"
 mode: primary
 color: "#D9480F"
-permission:
-  read: allow
-  edit: allow
-  glob: ask
-  grep: ask
-  list: ask
-  shell: ask
-  subagent: allow
 ---
 
 <!-- BAZER-MODE: bazer v1 -->

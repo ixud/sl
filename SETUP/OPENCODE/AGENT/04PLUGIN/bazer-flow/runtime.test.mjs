@@ -99,7 +99,7 @@ test('U01 child->root walks up to 5 hops and survives a cycle', () => {
 
 test('U02 non-flow agents are ungated and get no reminder', () => {
   const { rt } = boot();
-  for (const agent of ['snack', 'advisor', 'ghost']) {
+  for (const agent of ['snack', 'ghost']) {
     const sid = 's-' + agent;
     rt.setAgent(sid, agent);
     assert.equal(rt.before(sid, WRITE(PROJ)).allow, true, agent);
@@ -1616,4 +1616,82 @@ test('U19 subagent session gets no reminder', () => {
   drive(rt, 'root', 'buddha', 'P3');
   assert.equal(rt.remind('child'), null);
   assert.match(rt.remind('root'), /P3/);
+});
+
+test('U98 gate-cli-after pending logs head+exit once per callId', () => {
+  const entries = [];
+  const { rt } = boot({ log: (e) => entries.push(e) });
+  rt.setAgent('root', 'bazer');
+  rt.setAgent('child', 'plannotator');
+  rt.linkSession('child', 'root');
+  drive(rt, 'root', 'bazer', 'B3');
+  const long = 'feedback ' + 'x'.repeat(9900) + '\nEXIT=2';
+  rt.before('child', { tool: 'shell', command: V4, id: 'g98' });
+  rt.after('child', { tool: 'shell', id: 'g98', output: long });
+  rt.after('child', { tool: 'shell', id: 'g98', output: long });
+  const rows = entries.filter((e) => e.event === 'gate-cli-after' && e.callId6 === 'g98');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].outcome, 'pending');
+  assert.match(rows[0].head, /^feedback /);
+  assert.ok(rows[0].head.length <= 200);
+  assert.equal(rows[0].exit, 2);
+  assert.equal(rt.info('root').phase, 'B3');
+});
+
+test('U99 hello13-golden: full BUDDHA replay with real result shapes', () => {
+  const { rt } = boot();
+  rt.setAgent('root', 'buddha');
+  rt.setAgent('pot', 'poteto');
+  rt.setAgent('plan', 'plannotator');
+  rt.setAgent('run', 'arena-runner');
+  rt.setAgent('judge', 'arena-judge');
+  rt.setAgent('build', 'builder');
+  for (const [c, p] of [['pot', 'root'], ['plan', 'root'], ['run', 'root'], ['judge', 'root'], ['build', 'root']]) rt.linkSession(c, p);
+  assert.equal(rt.info('root').phase, 'P0');
+
+  const potetoOut = '<subagent sessionID="ses_child_1" state="completed">\nแผน: # GATE 1 — ARENA PLAN';
+  assert.equal(rt.before('root', TASK('poteto')).allow, true, 'P0 poteto start');
+  assert.equal(rt.info('root').phase, 'P1');
+  rt.after('root', { tool: 'task', subagent: 'poteto', id: 't99-1', output: potetoOut });
+  assert.equal(rt.info('root').phase, 'P2', 'poteto done');
+
+  const feedback = 'feedback ' + 'y'.repeat(9800) + '\nEXIT=2';
+  assert.equal(rt.before('plan', { tool: 'shell', command: V4, id: 'g99-1' }).allow, true, 'gate shell at P2');
+  rt.after('plan', { tool: 'shell', id: 'g99-1', output: feedback });
+  assert.equal(rt.info('root').phase, 'P2', 'pending keeps phase');
+  assert.equal(rt.badge('root'), 'P2 GATE1 r1', 'pending keeps round');
+
+  assert.equal(rt.before('plan', { tool: 'shell', command: V4, id: 'g99-2' }).allow, true, 'gate shell 2');
+  rt.after('plan', { tool: 'shell', id: 'g99-2', output: '{"decision":"approved"}\nEXIT=0' });
+  assert.equal(rt.info('root').phase, 'P3', 'approved advances');
+
+  assert.equal(rt.before('root', TASK('arena-runner')).allow, true, 'runner start 1');
+  rt.after('root', { tool: 'task', subagent: 'arena-runner', id: 'r99-1', status: 'error', error: true, output: '' });
+  assert.equal(rt.info('root').phase, 'P3');
+  const miss1 = rt.before('root', TASK('poteto'));
+  assert.equal(miss1.allow, false, 'runner error undoes start');
+  assert.equal(miss1.detail, 'requires');
+  assert.match(miss1.hint, /arena-runner started/);
+
+  assert.equal(rt.before('root', TASK('arena-runner')).allow, true, 'runner start 2');
+  rt.after('root', { tool: 'task', subagent: 'arena-runner', id: 'r99-2', status: 'running', output: 'The subagent is working in the background (sessionID: ses_run_2). You will be notified automatically when it finishes.' });
+  assert.equal(rt.info('root').phase, 'P3', 'running is started, not done');
+  assert.match(rt.before('root', TASK('poteto')).hint, /arena-judge done/);
+
+  assert.equal(rt.before('root', TASK('arena-judge')).allow, true, 'judge start');
+  rt.after('root', { tool: 'task', subagent: 'arena-judge', id: 'j99-1' });
+  assert.equal(rt.info('root').phase, 'P3');
+  assert.equal(rt.before('root', TASK('poteto')).allow, true, 'requires met');
+  assert.equal(rt.info('root').phase, 'P4', 'poteto start advances');
+  rt.after('root', { tool: 'task', subagent: 'poteto', id: 't99-2' });
+  assert.equal(rt.info('root').phase, 'P5', 'poteto done advances');
+
+  assert.equal(rt.before('plan', { tool: 'shell', command: V4, id: 'g99-3' }).allow, true, 'gate2 shell');
+  rt.after('plan', { tool: 'shell', id: 'g99-3', output: '{"decision":"approved"}\nEXIT=0' });
+  assert.equal(rt.info('root').phase, 'P6', 'GATE2 approved');
+
+  assert.equal(rt.before('root', TASK('builder')).allow, true, 'builder start');
+  assert.equal(rt.info('root').phase, 'P6');
+  rt.after('root', { tool: 'task', subagent: 'builder', id: 'b99-1' });
+  assert.equal(rt.info('root').phase, 'P7', 'builder done');
 });

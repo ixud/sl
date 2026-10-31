@@ -2,14 +2,6 @@
 description: "BUDDHA — โหมดทีมอัจฉริยะไฟแรง"
 mode: primary
 color: "#EB895B"
-permission:
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  list: allow
-  shell: allow
-  subagent: allow
 ---
 
 <!-- BAZER-MODE: buddha v1 -->

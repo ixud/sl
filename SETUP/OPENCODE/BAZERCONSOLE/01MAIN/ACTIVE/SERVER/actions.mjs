@@ -15,6 +15,7 @@ import {
   saveSettings, pstackPreset, readHistory, rollback, readState,
   cleanupPlan, cleanupOld, resetTemplate, writeFullSettings, restoreLockedModels,
   listBackups, restoreBackupFile, writeTextWithBackup, snapshotModels,
+  writeLadder, history, stamp,
 } from './apply.mjs';
 import { appendArrayItem, getAtPath, setAtPath, parseJsonc } from './jsonc.mjs';
 const ok = (summary, extra = {}) => ({ ok: true, summary, ...extra });
@@ -124,6 +125,21 @@ const HANDLERS = {
     const r = undoPolicy(ctx.home, policyId, ctx.store);
     const who = policyId === 'bazer-ladder' ? 'BAZER' : 'BUDDHA';
     return ok(`${who} ย้อนเป็นระดับ ${r.level} ${r.name} · เขียน ${r.targets} ที่`, { policy: r, policyId });
+  },
+
+  'ladder-set': (ctx, params) => {
+    const level = Number(params?.level), hours = params?.hours == null ? 8 : Number(params.hours);
+    if (![0, 1, 2].includes(level)) return bad('ระดับต้องเป็น 0, 1 หรือ 2');
+    if (!Number.isInteger(hours) || hours < 1 || hours > 24) return bad('hours ต้องเป็นจำนวนเต็ม 1–24');
+    if (level === 2 && params?.confirm !== 'เหมาเข่ง') {
+      return bad('L2 ต้องพิมพ์ "เหมาเข่ง" เพื่อยืนยัน — L2 เปิด: เขียนไฟล์โปรเจกต์หลังผ่าน GATE 2 · build/test/commit · เรียกเว็บ; ยังบล็อก/ถามเสมอ: protected paths · force-push · reset --hard · clean -f · ลบนอก %TEMP% · คำสั่งที่จำแนกไม่ได้');
+    }
+    try {
+      const r = writeLadder(ctx.home, level, hours);
+      history({ stamp: stamp(), entry: 'ladder-set', action: 'write', target: r.target, hashBefore: r.hashBefore, hashAfter: r.hashAfter }, ctx.store);
+      const when = new Date(r.expires).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' });
+      return ok(`ตั้งบันได L${level} · หมดอายุ ${when}`, { ladder: { level, expires: r.expires, path: r.target } });
+    } catch (e) { return bad(e.message); }
   },
 
   'builtin-toggle': (ctx, params) => {

@@ -1,6 +1,73 @@
 > หน่วยตัวเลขประจำการอัพเดตที่ใหม่ที่สุด (ล่าสุด) จะอยู่ระหว่างข้อความนี้ (อันที่คุณกำลังเห็นนี้เลย) กับ H1 อันแรก (อันที่ติดกับข้อความนี้ ฝั่งด้านล่าง)
 
 
+# 00.00.32 - Friday 30th October 2026 - 2ad: perm log + danger/protected hardening
+
+> permhook keeps every `ask` row (allow/deny still cap 5); ladder events carry `unk` (<=5 redacted segment texts); protected paths add share/cache/desktop, project .opencode + opencode.json(c), .git/hooks, .husky, console var/token-N; credential reads denied while var/state.json stays readable.
+> Danger adds Clear/Remove/Initialize-Disk, git push -fu/+branch/--delete, Defender exclusions, Start-Process RunAs, local 431x /api; inner cmd /c and powershell/pwsh -Command text is checked. Tests 178/178.
+
+# 00.00.31 - Thursday 29th October 2026 - 2ac: full permission object + danger regex fix
+
+> Root cause: index.ts:97 peek wrapper dropped effect/action/resources/agent, so ladder.mjs:116 saw effect undefined and returned silently; ladder allow never ran. 2ac moves the permission body to permhook.mjs and forwards the full host object; no-effect now logs ladder-skip once per sid+reason.
+> Danger: ladder.mjs format regex matched `Format-Table` (two false ladder-danger denies); now only format/format.com/Format-Volume/diskpart as command, while Format-Table/List/Wide/Custom, Out-String, git --format, format.txt and `cd format` are safe.
+> Tests: 171/171 (baseline 165; pre-fix permhook suite failed to load, L15 Format-Table failed, L16 cap failed). Build 2ac.
+
+# 00.00.30 - Wednesday 28th October 2026 - 2ab: validated shared slot + hookSeen guard
+
+> Real 2aa failure: ladder.mjs wrote `{}` into bazer.flow.shared at module eval; index adopted it and hookSeen threw `G.hooks.has`; 7 instances in one pid shared it, host saw "Failed to drain Session".
+> 2ab: shared.mjs sharedState() fills/repairs hooks(Set)/evt(Map)/flow({}) in place on every call; sharedBox and recordHook use it; hookSeen is try/catch including emit; guard paths stay fail-closed.
+> Tests: 165/165 (shared 6/6: empty slot, missing fields, wrong types, throw, two writers, index static). Build 2ab.
+
+# 00.00.29 - Tuesday 27th October 2026 - K5: single-instance launcher, no attached terminal
+
+> launch.mjs probes 127.0.0.1:4310–4311 via GET /api/state (app.root + app.port identity), reuses the running console or spawns index.mjs detached (windowsHide, stdio ignored, unref), polls 20 s, opens the default browser once, exits 1 with one Thai line on timeout.
+> Wrappers: BAZER CONSOLE.vbs now runs launch.mjs hidden (window style 0, no index.mjs); new launch.cmd prints one Thai line and ends `exit /b`; nothing kills a process or closes a parent terminal.
+> Tests: 6/6 with fake HTTP server, fake spawn and fake opener (found/no-spawn, spawn+poll, timeout, foreign listener, wrapper text, /api/ping). Launcher not tested end-to-end: owner runs it once.
+
+# 00.00.28 - Tuesday 27th October 2026 - 2aa: ladder diagnostics + request-agent fallback
+
+> First real ladder run (installed 2x, new window, SNACK) did not grant and logged no ladder row: likely the fresh instance had no session meta (root agent empty) or level 0; hot reload 2w->2x was observed in one pid.
+> 2aa: every early return logs ladder-skip (first 3 per sid/reason, no command text) + one ladder-src per process; primary session with no known agent and no parent may use request.agent when it is a spec ladder agent; flows/subagents never fallback.
+> Tests: 159/159 (ladder 14/14). Real ladder.json untouched. Build 2aa.
+
+# 00.00.27 - Tuesday 27th October 2026 - 2z: hermetic ladder tests + external_directory globs
+
+> 2y verified: all-resource shell judging holds; real ladder.json hash/mtime unchanged (c4a30b…, 2026-10-27T11:14:05Z).
+> 2z: runtime reads no ladder file unless a path/loader is injected; only index.ts wires LADDER_FILE(%USERPROFILE%). External_directory accepts exactly `<absolute dir><sep>*` and judges `<dir>` against temp roots; `**`/mid-`*`/`?`/`[`/relative/`..` leave, project dirs never granted.
+> Tests: 158/158 (ladder 13/13); real ladder.json untouched. Build 2z.
+
+# 00.00.26 - Tuesday 27th October 2026 - 2y: all-resource ladder judging + build 2y
+
+> 2y: shell permission now classifies EVERY resource, not resources[0]; all must be READ/TEMP at L1 or additionally PROJ/BUILD at L2; empty/non-string leaves; adapter keeps the full resources array.
+> edit/external: glob or relative resources are unresolvable -> leave; absolute temp paths allowed; effect allow/deny untouched. Full-command shellWrite scope fixes variable temp deletes (baseline U52 failure on the real level-1 ladder).
+> Tests: 156/156 (baseline 154/155, U52 failed before any edit; ladder 11/11). Build 2y.
+
+# 00.00.25 - Tuesday 27th October 2026 - ladder L0-L2 + build 2x
+
+> Ladder: file %USERPROFILE%\.local\state\opencode\bazer-flow\ladder.json {v:1,level,expires,setBy}; L0 = host decides, L1 = read/temp, L2 = project/build when the flow phase has writeProject; missing/invalid -> L0, expired L2 -> L1; the plugin never writes it.
+> permission.evaluate mutates effect only when the host said `ask`; DANGER/UNKNOWN never granted; DANGER denied in tool.execute.before with reasonCode ladder-danger; spec ladder agents [snack,advisor] / flows [buddha,bazer]; first 10 ladder rows per session, never command text.
+> 2x: F1 real read-only script passes at L1; child inherits the root; staged rollout starts with SNACK; 155/155 tests (baseline 145). Build 2x.
+
+# 00.00.24 - Tuesday 27th October 2026 - K4b: ladder 0/1/2 (ladder.json) + advisor fix
+
+> `ladder-set` {level 0|1|2, hours 1–24 default 8}: L0/L1 no confirm; L2 requires typed `เหมาเข่ง` and spells out what L2 opens (project writes after GATE 2, build/test/commit, web) vs always blocked/asked (protected paths, force-push, reset --hard, clean -f, delete outside temp, unclassifiable commands). Atomic write + history row; state API exposes `ladder {level,expires,valid,mtime,path}`.
+> Migration on first run: old stored 1→L0, 2..5→L1 (never L2), notice `ตั้งบันไดเป็น L1 อัตโนมัติ`; old policy keys untouched, idempotent.
+> Advisor overrides now glob/grep/list allow, shell ask, edit deny; SNACK unchanged. Probe adds warn-only ladder-state (valid/unexpired + flow.spec.json lists `ladder`). Modes tab shows L0/L1/L2 radios + expiry/time left + typed L2 confirm.
+> K4b: 9/9 ladder tests; not installed yet.
+
+# 00.00.23 - Tuesday 27th October 2026 - K4a: single permission owner (config only)
+
+> Decision: buddha/bazer/snack/advisor/arena-runner/arena-judge take permission only from opencode.jsonc agent.<id>.permission; md carries no permission block. Config writes replace the whole object, install strips legacy md blocks with backup, undo/rollback tested. Install not done yet.
+> Recon: host is last-match-wins and appends frontmatter after config, so file wins per key; policies.json:2 fixed, probe permission-level now reports md-block + config-vs-computed drift. Sticky downgrade 3->1 fixed (replace + stored-level install = no stale webfetch/websearch/external_directory).
+> Tests: permissions 9/9, console tools 19/19. 2w follow-through: flow-less roots are spec-driven (advisor readOnly, snack open) and gate-cli pending rows carry head/exit; build 2w.
+
+# 00.00.22 - Tuesday 27th October 2026 - recon P1-P8 + build 2w
+
+> Recon: permission resolution is last-match-wins (2.0.32 off 145127996; 2.1.3 off 173213661); md frontmatter is appended after config agent rules (2.0.32 off 145493944; 2.1.3 off 173663968), so file wins per key - policies.json:2 is wrong, probe.mjs:245 is right; a config/file deny short-circuits before permission.evaluate.
+> Recon: L3 = blanket shell allow (resource "*") plus web/external; downgrades are sticky because apply.mjs:184 merge:true never deletes keys dropped at lower levels. Hook contract: one shared object, `effect` mutated, return ignored; shell resources are parsed segments, no metadata/cwd.
+> 2w: flow-less roots are spec-driven via top-level `agents` (advisor readOnly, snack open; absent = open). agentmode.mjs denies project writes and classified shell writes outside temp, children inherit the root mode, flow agents unchanged; permission.evaluate logs {sid6,agent,action,n,lens,hasMeta,metaKeys,effect,source} once per session/action (max 5, never resource text); gate-cli pending rows carry head<=200 + exit once per callId.
+> Tests: 145/145 (baseline 139/139; pre-fix U98 failed on missing head/exit, agentmode suite failed on missing module, U99 passed). Caps: runtime 518, agentmode 40, index 214, spec +5; build 2w.
+
 # 00.00.21 - Sunday 25th October 2026 - K3: dev-file refs + selftest baseline
 > K2 verified: real state.json sha256 EE3E8824…FBD9 and history.tsv BD072E27…CDA9 unchanged; backups 1,402 / quarantine 67 / tokens 8.
 > K3: apitest plugin check now requires index.ts and neither logic.mjs nor guard.test.mjs; GUIDELINE/USECASES point gate logic at engine/runtime; min OpenCode stays 2.0.30 everywhere.

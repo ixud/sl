@@ -11,15 +11,6 @@ color: "#B26BFF"
 #   ถ้าจะเปิดบางตัว (เช่น webfetch: allow) ให้เพิ่มบรรทัดต่อท้าย แล้วแก้หมวด "ขอบเขต" ในเนื้อหาให้ตรงกัน
 # model: provider/fast-model-id
 # variant: low
-permission:
-  read: allow
-  edit: deny
-  # ปิด — ADVISOR ไม่ค้นหา/แสดงรายการไฟล์ อ่านได้เฉพาะพาธที่ผู้ใช้ระบุ
-  glob: deny
-  grep: deny
-  list: deny
-  shell: deny
-  subagent: deny
 ---
 
 <!-- BAZER-MODE: advisor v1 -->

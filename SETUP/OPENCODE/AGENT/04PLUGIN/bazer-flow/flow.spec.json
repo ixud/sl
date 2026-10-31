@@ -2,6 +2,11 @@
   "version": 2,
   "gateTools": ["submit_plan"],
   "tempOnly": ["arena-runner", "arena-judge"],
+  "agents": {
+    "advisor": { "mode": "readOnly" },
+    "snack": { "mode": "open" }
+  },
+  "ladder": { "agents": ["snack", "advisor"], "flows": ["buddha", "bazer"] },
   "defaults": { "stallMs": 1200000, "ttlMs": 43200000, "feedbackHintAt": 3, "errHintAt": 2, "helpers": ["explore"] },
   "flows": {
     "buddha": {

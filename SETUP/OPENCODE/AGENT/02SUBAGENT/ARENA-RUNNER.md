@@ -2,10 +2,6 @@
 description: "ARENA-RUNNER — ผู้แข่งขันหนึ่งที่นั่งของ Arena: BUDDHA เรียกตรง ๆ ทำตามทิศทางของที่นั่ง ผลิตผลงานในโฟลเดอร์ตัวเอง (ห้ามแตะโปรเจกต์)"
 mode: subagent
 color: "#7ad7a1"
-permission:
-  read: allow
-  edit: allow
-  subagent: deny
 ---
 
 <!-- BAZER-MODE: arena-runner v1 -->

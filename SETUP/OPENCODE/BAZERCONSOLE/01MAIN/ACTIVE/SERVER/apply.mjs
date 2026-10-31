@@ -8,9 +8,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { BACKUP_DIR, HISTORY_FILE, STATE_FILE, VAR_DIR, makeResolver } from './env.mjs';
 import { manifest, settings, policies, sha256File, sha256, srcPath, treeFiles, walk } from './manifest.mjs';
-import { stateOf, policyLevel as policyLevelOf, policyPermission, ladderPermission } from './plan.mjs';
+import { stateOf, policyLevel as policyLevelOf, policyPermission } from './plan.mjs';
 import { setAtPath, removeArrayItem, getAtPath } from './jsonc.mjs';
-import { setFrontmatterPermission } from './frontmatter.mjs';
+import { stripFrontmatterPermission } from './frontmatter.mjs';
 
 const now = () => new Date().toISOString();
 /** อ่านแบบดิบ — ไม่ตัด BOM (ใช้กับ path ที่จะเขียนกลับ เพื่อคง BOM เดิม) */
@@ -19,6 +19,12 @@ const readText = (p) => readTextRaw(p).replace(/^\uFEFF/, '');
 const exists = (p) => { try { return fs.statSync(p).isFile(); } catch { return false; } };
 const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
 const walkTree = (dir) => walk(dir);
+const hasPermBlock = (p) => {
+  try {
+    const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readTextRaw(p));
+    return !!m && /^permission\s*:/m.test(m[1]);
+  } catch { return false; }
+};
 
 /**
  * ที่เก็บ state / backup / history — ปกติคือ var/ ของ Console
@@ -168,21 +174,16 @@ export function writeEntry(entry, home, st, store = storeFor(home)) {
       let text = readText(srcPath(entry));
       // agent ที่ผูกกับบันได: ต้องแนบ permission ของ "ขั้นที่ตั้งอยู่จริง" ลง frontmatter
       // (ถ้าใช้ defaultLevel ตรง ๆ กด apply ทีเดียวขั้นที่ผู้ใช้ตั้งไว้จะหาย)
-      if (entry.ladderPolicy && entry.ladderAgent) {
-        const st = readState(store);
-        const cur = (st.policies || {})[entry.ladderPolicy]?.level
-          || (st.policy?.policyId === entry.ladderPolicy ? st.policy.level : null)
-          || policies[entry.ladderPolicy]?.defaultLevel;
-        text = setFrontmatterPermission(text, ladderPermission(entry.ladderAgent, entry.ladderPolicy, cur));
-      }
+      if (entry.stripPermission || entry.ladderPolicy) text = stripFrontmatterPermission(text);
       push(target, text);
       break;
     }
     case 'jsonc-merge': {
       // readTextRaw: คง BOM เดิมไว้ (setAtPath จัดการ BOM เอง)
       const cur = exists(target) ? readTextRaw(target) : '{\n}\n';
-      const desired = entry.fromPolicy ? policyPermission(entry, policyLevelOf(entry.fromPolicy)) : entry.value;
-      const next = setAtPath(cur, entry.valuePath.split('.'), desired, { merge: true });
+      const storedLevel = entry.fromPolicy ? (readState(store).policies || {})[entry.fromPolicy]?.level : null;
+      const desired = entry.fromPolicy ? policyPermission(entry, policyLevelOf(entry.fromPolicy, storedLevel)) : entry.value;
+      const next = setAtPath(cur, entry.valuePath.split('.'), desired, { merge: !entry.replace });
       if (next !== cur) push(target, next);
       break;
     }
@@ -261,7 +262,10 @@ export function applyEntries(home, ids, store = storeFor(home)) {
     }
     let stt;
     try { stt = stateOf(entry, home); } catch (e) { errors.push({ id: entry.id, why: e.message }); continue; }
-    if (!stt.writable) { skipped.push({ id: entry.id, why: stt.note || stt.state }); continue; }
+    if (!stt.writable && !(entry.replace && !stt.blocker)) {
+      const forceStrip = (entry.stripPermission || entry.ladderPolicy) && hasPermBlock(makeResolver(home).resolve(entry.target));
+      if (!forceStrip) { skipped.push({ id: entry.id, why: stt.note || stt.state }); continue; }
+    }
     try {
       const r = writeEntry(entry, home, st, store);
       applied.push({ id: entry.id, files: r.written?.length || 0 });
@@ -330,7 +334,7 @@ export function writeAgentPermission(home, agentId, permission, { st = stamp(), 
   if (!exists(file)) return { changed: false, id: agentId, note: 'ยังไม่มีไฟล์ agent (ติดตั้งก่อน)' };
   const cur = readTextRaw(file);
   let next;
-  try { next = setFrontmatterPermission(cur, permission); }
+  try { next = stripFrontmatterPermission(cur); }
   catch (e) { return { changed: false, id: agentId, note: e.message }; }
   if (next === cur) return { changed: false, id: agentId };
   const b = backupFile(st, file, store);
@@ -788,6 +792,36 @@ export function restoreLockedModels(home, mode, store = storeFor(home)) {
   return { stamp: st, mode: mode || 'all', changed, skipped };
 }
 
+/* -------------------- ladder 3 ขั้น (L0/L1/L2) — ไฟล์ของปลั๊กอิน -------------------- */
+export function ladderFile(home, file) {
+  return file ? path.resolve(file) : path.join(makeResolver(home).vars.STATE, 'bazer-flow', 'ladder.json');
+}
+export function readLadder(home, { file, now = Date.now() } = {}) {
+  const target = ladderFile(home, file);
+  let doc = null, mtime = null;
+  try { doc = JSON.parse(readText(target)); mtime = fs.statSync(target).mtime.toISOString(); } catch { /* missing/invalid */ }
+  const lv = Number(doc?.level), exp = doc?.expires == null ? null : Number(doc.expires);
+  const valid = !!doc && doc.v === 1 && [0, 1, 2].includes(lv) && (exp === null || (Number.isFinite(exp) && exp > now));
+  return { level: valid ? lv : 0, expires: Number.isFinite(exp) ? exp : null, valid, mtime, path: target };
+}
+export function writeLadder(home, level, hours = 8, { file, now = Date.now() } = {}) {
+  const lv = Number(level), h = Number(hours);
+  if (![0, 1, 2].includes(lv)) throw new Error('ระดับต้องเป็น 0, 1 หรือ 2');
+  if (!Number.isInteger(h) || h < 1 || h > 24) throw new Error('hours ต้องเป็นจำนวนเต็ม 1–24');
+  const target = ladderFile(home, file), before = fs.existsSync(target) ? sha256File(target) : null;
+  const expires = now + h * 3600 * 1000;
+  const after = writeTextAtomic(target, `${JSON.stringify({ v: 1, level: lv, expires, setBy: 'console' }, null, 2)}\n`);
+  return { target, level: lv, expires, hashBefore: before, hashAfter: after, existed: before !== null };
+}
+export function migrateLadder(home, store = storeFor(home), { file, now = Date.now() } = {}) {
+  const target = ladderFile(home, file);
+  if (fs.existsSync(target)) return { ...readLadder(home, { file, now }), migrated: false };
+  const state = readState(store);
+  const old = Number(state.policies?.['buddha-ladder']?.level ?? state.policies?.['bazer-ladder']?.level ?? state.policy?.level ?? 1);
+  const level = old >= 2 && old <= 5 ? 1 : 0;
+  writeTextAtomic(target, `${JSON.stringify({ v: 1, level, expires: null, setBy: 'console' }, null, 2)}\n`);
+  return { ...readLadder(home, { file, now }), migrated: true, notice: 'ตั้งบันไดเป็น L1 อัตโนมัติ' };
+}
 export function pstackPreset(home, mode, modelA, modelB, store = storeFor(home)) {
   if (!modelA) throw new Error('ต้องระบุโมเดลอย่างน้อยหนึ่งตัว');
   const coding = new Set(['feature', 'bugfix', 'perf', 'hillclimb', 'how-explorer', 'why-investigators', 'reflect-tooling', 'swarm']);

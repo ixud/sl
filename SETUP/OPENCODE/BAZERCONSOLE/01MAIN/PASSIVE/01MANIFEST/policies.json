@@ -1,5 +1,5 @@
 {
-  "note": "บันไดความแรง — เขียนลง agent.buddha.permission + agent.arena-runner.permission + agent.arena-judge.permission ใน opencode.jsonc (config ต่อท้ายและชนะกฎในไฟล์ · พิสูจน์แล้ว v2.0.32)",
+  "note": "single owner: opencode.jsonc agent.<id>.permission (written by replace); md carries no permission block. Runtime resolution is last-match-wins + frontmatter appended after config, so a remaining md block wins per key (recon v2.0.32).",
   "buddha-ladder": {
     "title": "บันไดเหมาเข่ง",
     "mode": "buddha",

@@ -89,8 +89,9 @@ test('toLink and toDeleted read the ids used by the old session maps', () => {
 });
 
 test('toPermissionReq maps permission actions to runtime requests', () => {
-  assert.deepEqual(toPermissionReq({ action: 'edit', resources: ['C:/p/x.ts'] }), { tool: 'write', path: 'C:/p/x.ts' });
-  assert.deepEqual(toPermissionReq({ action: 'bash', resources: ['echo hi'] }), { tool: 'shell', command: 'echo hi' });
+  assert.deepEqual(toPermissionReq({ action: 'edit', resources: ['C:/p/x.ts'] }), { tool: 'write', path: 'C:/p/x.ts', resources: ['C:/p/x.ts'] });
+  assert.deepEqual(toPermissionReq({ action: 'bash', resources: ['echo hi'] }), { tool: 'shell', command: 'echo hi', resources: ['echo hi'] });
+  assert.deepEqual(toPermissionReq({ action: 'external_directory', resources: ['C:/Temp/*'] }), { tool: 'read', resources: ['C:/Temp/*'] });
   assert.deepEqual(toPermissionReq({ action: 'task', resources: ['builder'] }), { tool: 'task', subagent: 'builder' });
   assert.deepEqual(toPermissionReq({ action: 'read', resources: [] }), { tool: 'read' });
 });

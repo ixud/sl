@@ -2,14 +2,6 @@
 description: "ARENA-JUDGE — กรรมการของ Arena: BUDDHA เรียกตรง ๆ ให้คะแนน candidate ทีละเกณฑ์แบบอ่านอย่างเดียว แล้วเสนอฐานที่ควรเลือก"
 mode: subagent
 color: "#c9a7ff"
-permission:
-  read: allow
-  edit: deny
-  glob: allow
-  grep: allow
-  list: allow
-  shell: deny
-  subagent: deny
 ---
 
 <!-- BAZER-MODE: arena-judge v1 -->

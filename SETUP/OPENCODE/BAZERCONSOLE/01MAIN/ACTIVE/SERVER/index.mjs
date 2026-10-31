@@ -13,7 +13,7 @@ import { manifest, settings, actions, policies, probes, validate } from './manif
 import { computePlan, diffFor } from './plan.mjs';
 import { checkLaw } from './law.mjs';
 import { runAction, actionIds } from './actions.mjs';
-import { readHistory, readState, allControls, storeFor, trustedSnapshot } from './apply.mjs';
+import { readHistory, readState, allControls, storeFor, trustedSnapshot, readLadder, migrateLadder } from './apply.mjs';
 import { cleanupPlan } from './apply.mjs';
 import { getAtPath } from './jsonc.mjs';
 import { listModels } from './models.mjs';
@@ -28,6 +28,7 @@ const PORT = Number(arg('port', 4310));
 const HOME = arg('home', '');
 const NO_OPEN = process.argv.includes('--no-open');
 const STORE = storeFor(HOME || process.env.BAZER_HOME || undefined);
+const LADDER_BOOT = (() => { try { return migrateLadder(HOME || process.env.BAZER_HOME || undefined, STORE); } catch { return { notice: null }; } })();
 
 const TOKEN = crypto.randomBytes(24).toString('hex');
 const TOKEN_RE = /^token-(\d+)$/;
@@ -138,6 +139,8 @@ function buildState(home, { withProbes = false } = {}, store) {
     policies: Object.entries(policies).filter(([k]) => k !== 'note').map(([id, p]) => ({ id, title: p.title, mode: p.mode, defaultLevel: p.defaultLevel, levels: p.levels.map(({ permission, ...rest }) => rest) })),
     policyState: state.policy || null,
     policyStateAll: state.policies || {},
+    ladder: readLadder(home),
+    ladderNotice: LADDER_BOOT.notice,
     policyDetected: Object.fromEntries(
       Object.keys(policies).filter((k) => k !== 'note').map((id) => {
         try { return [id, detectPolicyLevel(home, id)]; } catch (e) { return [id, { level: null, source: 'error', error: e.message }]; }

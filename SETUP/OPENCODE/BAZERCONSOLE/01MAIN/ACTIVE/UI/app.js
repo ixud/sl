@@ -551,38 +551,23 @@
 
   function renderModes() {
     const agents = S.plan.entries.filter((e) => e.kind === 'agent');
-    const ladders = S.policies.filter((x) => x.mode === 'buddha' || x.mode === 'bazer');
-    const curOf = (l) => {
-      const det = (S.policyDetected || {})[l.id];
-      if (det?.level && det.level !== 'custom') return String(det.level);
-      const st = (S.policyStateAll || {})[l.id];
-      const legacy = S.policyState?.policyId === l.id ? S.policyState.level : null;
-      return String(st?.level ?? legacy ?? l.defaultLevel);
-    };
-    const srcOf = (l) => {
-      const det = (S.policyDetected || {})[l.id];
-      if (det?.level === 'custom') return 'กำหนดเอง (ไม่ตรงขั้นไหนในบันได)';
-      if (det?.level) return `อ่านจาก ${l.mode === 'bazer' ? 'bazer' : 'buddha'}.md/config`;
-      return 'ยังไม่มีค่าใน config (ใช้ขั้นเริ่มต้น)';
-    };
-    const ladderCard = (l) => {
-      const cur = curOf(l);
-      const who = l.mode === 'buddha' ? 'BUDDHA' : 'BAZER';
-      return `<h2 class="section">บันไดเหมาเข่ง · ${who}</h2>
+    const ladderCard = () => {
+      const L = S.ladder || { level: 0, expires: null, valid: true };
+      const left = L.expires == null ? null : Math.max(0, L.expires - Date.now());
+      const leftText = left == null ? 'ไม่กำหนด' : `${Math.floor(left / 3600000)} ชม. ${Math.floor((left % 3600000) / 60000)} น.`;
+      const expText = L.expires == null ? 'ไม่กำหนด' : new Date(L.expires).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' });
+      return `<h2 class="section">บันได 3 ขั้น · BUDDHA / BAZER</h2>
       <div class="card">
-        <p class="muted">กดขั้นที่ต้องการ → ยืนยัน → เขียนค่าลง <code>opencode.jsonc</code> + frontmatter ของ agent ทันที · มีผลกับ session ใหม่</p>
+        <p class="muted">L0 อ่านอย่างเดียว · L1 แก้ตาม GATE · L2 เหมาเข่ง (ต้องพิมพ์ยืนยัน) · เขียน <code>ladder.json</code> ของปลั๊กอิน</p>
         <div class="ladder" style="margin-top:12px">
-          ${l.levels.map((x) => `<div class="step ${String(x.id) === cur ? 'active' : ''}" data-ladder="${esc(x.id)}" data-policy="${esc(l.id)}">
-            <div class="num">${esc(x.id)}</div>
-            <div><div class="name">${esc(x.name)} <span class="tag">· ${esc(x.tagline || '')}</span></div><span class="risk-why">${esc(x.why)}</span></div>
-            <div>${riskBadge(x.risk)}</div>
-          </div>`).join('')}
+          ${[0, 1, 2].map((lv) => `<label class="step ${L.level === lv ? 'active' : ''}" style="cursor:pointer">
+            <input type="radio" name="ladderLevel" data-ladder-level="${lv}" ${L.level === lv ? 'checked' : ''}>
+            <div class="num">L${lv}</div>
+            <div><div class="name">${lv === 0 ? 'อ่านอย่างเดียว' : lv === 1 ? 'แก้โปรเจกต์ตาม GATE' : 'เหมาเข่ง'}</div>
+            <span class="risk-why">${lv === 0 ? 'ไม่เขียนไฟล์โปรเจกต์' : lv === 1 ? 'เขียน/รันได้หลังผ่านด่าน' : 'เปิดงานเขียน build/test/commit เว็บ — ยังกันของอันตราย'}</span></div>
+          </label>`).join('')}
         </div>
-        <div class="btn-row" style="margin-top:12px">
-          <button class="btn ghost" data-act="policy-undo" data-params='{"policy":"${esc(l.id)}"}'>ย้อนระดับก่อนหน้า (${who})</button>
-          ${badge(S.policyDetected?.[l.id]?.level && S.policyDetected[l.id].level !== 'custom' ? 'ok' : 'design')}
-          <span class="small muted">ตอนนี้: ${esc(l.levels.find((x) => String(x.id) === cur)?.name || '-')} (ขั้น ${esc(cur)}) · ${esc(srcOf(l))}</span>
-        </div>
+        <p class="small muted">ระดับปัจจุบัน L${L.level} · หมดอายุ ${esc(expText)} · เหลือ ${esc(leftText)}${L.valid ? '' : ' · ไฟล์ไม่ถูกต้อง/หมดอายุ → ใช้ L0'}${S.ladderNotice ? ` · ${esc(S.ladderNotice)}` : ''}</p>
       </div>`;
     };
     const arenaCtl = S.settings.groups.find((g) => g.id === 'arena')?.controls || [];
@@ -600,7 +585,7 @@
       <h2 class="section">โหมดหลัก</h2>
       <div class="grid c2">${modeCards}</div>
 
-      ${ladders.map(ladderCard).join('')}
+      ${ladderCard()}
 
       <h2 class="section">โมเดล &amp; Effort ของ ARENA</h2>
       ${renderArenaEditor()}
@@ -916,19 +901,24 @@
       });
     }
 
-    if (t.dataset.ladder) {
-      const policyId = t.dataset.policy || 'buddha-ladder';
-      const ladder = S.policies.find((x) => x.id === policyId) || S.policies.find((x) => x.mode === 'buddha');
-      const who = ladder.mode === 'buddha' ? 'BUDDHA' : 'BAZER';
-      const lv = ladder.levels.find((l) => String(l.id) === String(t.dataset.ladder));
-      const keys = Object.entries(lv.permission || {}).map(([k, v]) => `<code>${esc(k)}: ${esc(v)}</code>`).join(' · ');
-      return confirmSheet({
-        title: `เปลี่ยน ${who} เป็นขั้น ${lv.id} · ${lv.name}`,
-        risk: { level: lv.risk, why: lv.why },
-        body: `<p>${esc(lv.tagline || '')}</p><p class="small muted">ค่าที่จะเขียน: ${keys || '(ไม่ระบุ)'}</p><p class="small">มีผลกับ <strong>session ใหม่</strong> · บันทึกทันทีโดยไม่ต้องกดอัพเดต</p>`,
-        confirmText: 'ยืนยันและบันทึกทันที',
-        onConfirm: () => act('policy-set', { policy: policyId, level: lv.id }, { confirmed: true }),
+    if (t.dataset.ladderLevel) {
+      const level = Number(t.dataset.ladderLevel);
+      const go = (confirm) => act('ladder-set', { level, confirm: String(confirm || '') });
+      if (level !== 2) return go();
+      openModal({
+        title: 'L2 เหมาเข่ง — ต้องพิมพ์ยืนยัน',
+        body: `<p>L2 เปิด: เขียนไฟล์โปรเจกต์หลังผ่าน GATE 2 · build/test/commit · เรียกเว็บ</p>
+          <p class="small muted">ยังบล็อก/ถามเสมอ: protected paths · force-push · reset --hard · clean -f · ลบนอก %TEMP% · คำสั่งที่จำแนกไม่ได้</p>
+          <input id="ladderConfirm" style="width:100%;margin-top:10px" placeholder="พิมพ์ เหมาเข่ง">`,
+        foot: '<button class="btn ghost" data-close="1">ยกเลิก</button><button class="btn primary" id="ladderGo">ยืนยัน L2</button>',
       });
+      $('#ladderGo').onclick = () => {
+        const v = $('#ladderConfirm').value.trim();
+        if (v !== 'เหมาเข่ง') return toast('ยังไม่ยืนยัน', 'ต้องพิมพ์ เหมาเข่ง ให้ตรง', 'err');
+        closeModal();
+        go(v);
+      };
+      return;
     }
 
     if (t.dataset.saveGroup) {

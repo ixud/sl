@@ -27,7 +27,7 @@
       "strategy": "jsonc-merge",
       "valuePath": "agent.buddha.permission",
       "fromPolicy": "buddha-ladder",
-      "onlyIfMissing": true,
+      "replace": true,
       "status": "ready",
       "auto": true,
       "why": "ถ้าผู้ใช้เคยกดบันไดไว้แล้ว ห้ามทับด้วยค่า default ตอนอัพเดต"
@@ -40,7 +40,7 @@
       "strategy": "jsonc-merge",
       "valuePath": "agent.bazer.permission",
       "fromPolicy": "bazer-ladder",
-      "onlyIfMissing": true,
+      "replace": true,
       "status": "ready",
       "auto": true,
       "why": "บันไดของ BAZER แยกจาก BUDDHA — ถ้าผู้ใช้เคยกดบันไดไว้แล้ว ห้ามทับด้วยค่า default"
@@ -57,7 +57,7 @@
         "subagent": "deny",
         "external_directory": "allow"
       },
-      "onlyIfMissing": true,
+      "replace": true,
       "status": "ready",
       "auto": true,
       "why": "runner เขียน candidate ลง %TEMP% ของตัวเอง (ต้องมี external_directory) และห้ามเรียก subagent เพื่อไม่ให้แอบเรียกผู้แข่งคนอื่น"
@@ -76,10 +76,57 @@
         "subagent": "deny",
         "external_directory": "allow"
       },
-      "onlyIfMissing": true,
+      "replace": true,
       "status": "ready",
       "auto": true,
       "why": "กรรมการต้องอ่าน candidate ใน %TEMP% ได้ (external_directory) แต่ห้ามแก้ไฟล์ ห้ามรันคำสั่ง และห้ามเรียก subagent"
+    },
+    {
+      "id": "cfg.snack-permission",
+      "kind": "config",
+      "title": "permission for SNACK (single owner)",
+      "target": "${CONFIG}/opencode.jsonc",
+      "strategy": "jsonc-merge",
+      "valuePath": "agent.snack.permission",
+      "fromPolicy": "buddha-ladder",
+      "policyOverrides": {
+        "read": "allow",
+        "edit": "allow",
+        "glob": "deny",
+        "grep": "deny",
+        "list": "deny",
+        "shell": "ask",
+        "subagent": "deny"
+      },
+      "replace": true,
+      "status": "ready",
+      "auto": true,
+      "why": "SNACK keeps its current effective rules; config is the only owner"
+    },
+    {
+      "id": "cfg.advisor-permission",
+      "kind": "config",
+      "title": "permission for ADVISOR (single owner)",
+      "target": "${CONFIG}/opencode.jsonc",
+      "strategy": "jsonc-merge",
+      "valuePath": "agent.advisor.permission",
+      "fromPolicy": "buddha-ladder",
+      "policyOverrides": {
+        "read": "allow",
+        "edit": "deny",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "shell": "ask",
+        "subagent": "deny",
+        "webfetch": "ask",
+        "websearch": "ask",
+        "external_directory": "ask"
+      },
+      "replace": true,
+      "status": "ready",
+      "auto": true,
+      "why": "ADVISOR single-owner: read/search allow, edit deny, shell ask, web/external ask"
     },
     {
       "id": "cfg.keybinds",
@@ -126,6 +173,7 @@
       "source": "AGENT/01PRIMARY/SNACK.md",
       "target": "${CONFIG}/agents/snack.md",
       "strategy": "overwrite",
+      "stripPermission": true,
       "owner": "ours",
       "status": "ready",
       "auto": true
@@ -137,6 +185,7 @@
       "source": "AGENT/01PRIMARY/ADVISOR.md",
       "target": "${CONFIG}/agents/advisor.md",
       "strategy": "overwrite",
+      "stripPermission": true,
       "owner": "ours",
       "status": "ready",
       "auto": true

@@ -1,5 +1,6 @@
 /* bazer-flow paths - temp-root and shell-write classification.
    Moved out of logic.mjs (pure, no imports). */
+import { extraProtected, credentialMention } from './rules.mjs';
 
 export function normalizedPath(value) {
   return String(value ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -147,7 +148,7 @@ function targetsIn(stmt) {
 
 const unresolvedTarget = (t) => UNRESOLVED.test(String(t).replace(BUILTIN, ' '));
 
-function classifyWrite(raw, env, detail, cwd) {
+function classifyWrite(raw, env, detail, cwd, tempRoots = defaultTempRoots()) {
   const resolved = mapWsl(resolveJoinPath(expandShell(raw, env)));
   const targets = [];
   for (const stmt of stripNeutral(resolved).split(/\r?\n|;/)) {
@@ -155,14 +156,14 @@ function classifyWrite(raw, env, detail, cwd) {
     targets.push(...targetsIn(stmt));
   }
   if (!targets.length) {
-    if (shellTouchesTemp(resolved)) return { write: true, detail, scope: 'temp' };
+    if (shellTouchesTemp(resolved, tempRoots)) return { write: true, detail, scope: 'temp' };
     const rel = [...resolved.matchAll(/>{1,2}\s*([^\s;&|"']+)/g)].map((m) => m[1]).filter((t) => !isAbs(t));
-    if (rel.length && cwd && shellTouchesTemp(cwd)) return { write: true, detail, scope: 'temp' };
+    if (rel.length && cwd && shellTouchesTemp(cwd, tempRoots)) return { write: true, detail, scope: 'temp' };
     return { write: true, detail, scope: 'project' };
   }
   for (const t of targets) {
     if (unresolvedTarget(t)) return { write: true, detail: 'unresolved-var', scope: 'project' };
-    if (!isTempPath(t)) return { write: true, detail, scope: 'project' };
+    if (!isTempPath(t, tempRoots)) return { write: true, detail, scope: 'project' };
   }
   return { write: true, detail, scope: 'temp' };
 }
@@ -191,16 +192,17 @@ const cwdIn = (cmd, base) => {
 /** write? + detail + scope for one shell command (inner -c scripts analysed too) */
 export function shellWrite(command, env = {}, opts = {}) {
   const raw = expandShell(String(command ?? ''), env);
+  const temps = opts.tempRoots || defaultTempRoots();
   const inner = innerOf(raw);
   if (inner) {
-    const nested = shellWrite(inner, env, { cwd: cwdIn(inner, cwdIn(raw, opts.cwd)) });
+    const nested = shellWrite(inner, env, { cwd: cwdIn(inner, cwdIn(raw, opts.cwd)), tempRoots: temps });
     if (nested.write) return nested;
   }
   const cwd = cwdIn(raw, opts.cwd);
   if (INTERP.test(raw) && INTERP_WRITE.test(raw)) return { write: true, detail: 'interpreter-write', scope: 'project' };
-  if (REDIRECT_WRITE.test(stripNeutral(raw))) return classifyWrite(raw, env, 'redirect', cwd);
-  if (IO_WRITE.test(raw)) return classifyWrite(raw, env, 'io-write', cwd);
-  if (WRITE_VERB.test(raw)) return classifyWrite(raw, env, 'write-verb', cwd);
+  if (REDIRECT_WRITE.test(stripNeutral(raw))) return classifyWrite(raw, env, 'redirect', cwd, temps);
+  if (IO_WRITE.test(raw)) return classifyWrite(raw, env, 'io-write', cwd, temps);
+  if (WRITE_VERB.test(raw)) return classifyWrite(raw, env, 'write-verb', cwd, temps);
   return { write: false, detail: '', scope: 'read' };
 }
 
@@ -217,7 +219,7 @@ export function shellTouchesTemp(command, tempRoots = defaultTempRoots()) {
 /* ---------------------------------------------------------------- protected paths
    Config/state/skills/plannotator live under HOME. Never writable by any flow phase. */
 
-const PROTECTED_REL = ['.config/opencode', '.local/state/opencode', '.agents', '.plannotator'];
+const PROTECTED_REL = ['.config/opencode', '.local/state/opencode', '.local/share/opencode', '.cache/opencode', 'appdata/roaming/ai.opencode.desktop', '.agents', '.plannotator'];
 
 function homeOf(env) {
   const fromEnv = env && (env.HOME || env.USERPROFILE);
@@ -249,6 +251,7 @@ export function isProtectedPath(p, env = {}) {
   if (!home) return false;
   const norm = normalizeSegments(expandHome(p, home));
   if (!norm) return false;
+  if (extraProtected(norm)) return true;
   return PROTECTED_REL.some((rel) => {
     const root = normalizeSegments(home + '/' + rel);
     return !!root && (norm === root || norm.startsWith(root + '/'));
@@ -256,6 +259,8 @@ export function isProtectedPath(p, env = {}) {
 }
 
 /** true when any path-like token in the command resolves inside a protected root */
+export function credentialInCommand(cmd) { return credentialMention(cmd); }
+
 export function protectedInCommand(cmd, env = {}) {
   const home = homeOf(env);
   if (!home) return false;
